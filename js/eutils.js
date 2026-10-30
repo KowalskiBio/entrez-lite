@@ -58,7 +58,8 @@ async function eutilsRequest(endpoint, params, { json = true } = {}) {
         ? await fetch(url, { method: 'POST', body })
         : await fetch(url + '?' + qs);
     } catch {
-      if (attempt < 2) { await sleep(600); continue; }
+      // NCBI's 429 replies carry no CORS header, so a rate limit looks like a network error.
+      if (attempt < 3) { await sleep(800 * 2 ** attempt); continue; }
       throw new EutilsError('Network error: could not reach NCBI.');
     }
     if ((res.status === 429 || res.status >= 500) && attempt < 3) {
@@ -149,7 +150,8 @@ async function datasetsRequest(path) {
     try {
       res = await fetch(DATASETS_BASE + path, { headers });
     } catch {
-      if (attempt < 2) { await sleep(600); continue; }
+      // NCBI's 429 replies carry no CORS header, so a rate limit looks like a network error.
+      if (attempt < 3) { await sleep(800 * 2 ** attempt); continue; }
       throw new EutilsError('Network error: could not reach the NCBI Datasets API.');
     }
     if ((res.status === 429 || res.status >= 500) && attempt < 3) {
@@ -214,6 +216,12 @@ async function assemblyAccessionFor(db, uid) {
   let ids = [uid];
   if (db !== 'assembly') {
     ({ ids } = await elinkNeighbor(db, uid, `${db}_assembly`));
+    if (!ids.length && db === 'nuccore') {
+      // WGS master records have no assembly link, but their DBLINK names it.
+      // A 1 bp fetch returns the full header without the sequence.
+      const head = await efetch(db, uid, 'gb', { seq_start: 1, seq_stop: 1 });
+      return head.match(/^\s+Assembly:\s*(GC[AF]_\d+\.\d+)/m)?.[1] || null;
+    }
     if (!ids.length) return null;
   }
   const [doc] = await esummary('assembly', ids.slice(0, 1));

@@ -639,6 +639,9 @@ async function renderRecord(db, id, params, token) {
   Recent.add({ kind: 'record', db, id, label: s.title });
 
   const isSeq = SEQ_DBS.has(db);
+  // WGS and TSA master records describe a sequencing project and hold no sequence;
+  // the data is in the contigs (and scaffolds) they list.
+  const isMaster = db === 'nuccore' && doc.properties?.master === '1';
   const region = {
     from: Number(params.get('from')) || '',
     to: Number(params.get('to')) || '',
@@ -647,10 +650,11 @@ async function renderRecord(db, id, params, token) {
   const hasRegion = isSeq && region.from && region.to;
   const shownLen = hasRegion ? Math.abs(region.to - region.from) + 1 : Number(doc.slen || 0);
 
-  const tabs = isSeq
+  const tabs = isMaster ? [['contigs', 'Contigs'], ['genbank', 'GenBank']]
+    : isSeq
     ? [['genbank', db === 'protein' ? 'GenPept' : 'GenBank'], ['fasta', 'FASTA'], ['features', 'Features'], ...(db === 'nuccore' ? [['cds', 'CDS']] : [])]
     : [['summary', 'Summary'], ...(db === 'pubmed' ? [['abstract', 'Abstract']] : [])];
-  const defaultTab = isSeq ? (shownLen > BIG_RECORD ? 'features' : 'genbank') : 'summary';
+  const defaultTab = isMaster ? 'contigs' : isSeq ? (shownLen > BIG_RECORD ? 'features' : 'genbank') : 'summary';
   let tab = tabs.some(([t]) => t === params.get('tab')) ? params.get('tab') : defaultTab;
 
   const ncbiUrl = `https://www.ncbi.nlm.nih.gov/${db}/${encodeURIComponent(s.id)}`;
@@ -670,7 +674,7 @@ async function renderRecord(db, id, params, token) {
           <div id="tab-body"></div>
         </div>
         <aside class="record-side">
-          ${db === 'nuccore' ? `
+          ${db === 'nuccore' && !isMaster ? `
             <form class="card" id="region">
               <h3>Change region shown</h3>
               <div class="row2">
@@ -711,6 +715,61 @@ async function renderRecord(db, id, params, token) {
   renderTab(db, id, doc, tab, region, hasRegion, shownLen, token);
   if ($('#genome-card')) renderGenomeCard(db, doc.uid, token);
   renderRelated(db, doc.uid, token);
+}
+
+const MAX_CONTIGS = 500;
+
+// Expands the WGS / WGS_SCAFLD / TSA lines of a master record, e.g.
+// "JCCBIC010000001-JCCBIC010000077", into individual accessions.
+function masterMembers(gbText, refseq) {
+  const out = { scaffolds: [], contigs: [], total: 0 };
+  for (const m of gbText.matchAll(/^(WGS_SCAFLD|WGS|TSA|TLS)\s+(\S+)/gm)) {
+    const [a, b = a] = m[2].split('-');
+    const pa = a.match(/^([A-Z_]+)(\d+)$/);
+    const pb = b.match(/^([A-Z_]+)(\d+)$/);
+    if (!pa || !pb || pa[1] !== pb[1]) continue;
+    const list = m[1] === 'WGS_SCAFLD' ? out.scaffolds : out.contigs;
+    const prefix = refseq && !pa[1].startsWith('NZ_') && m[1] !== 'WGS_SCAFLD' ? 'NZ_' + pa[1] : pa[1];
+    const start = Number(pa[2]);
+    const end = Number(pb[2]);
+    out.total += end - start + 1;
+    for (let n = start; n <= end && list.length < MAX_CONTIGS; n++) list.push(prefix + String(n).padStart(pa[2].length, '0'));
+  }
+  return out;
+}
+
+async function renderContigsTab(body, id, doc, isStale) {
+  const gb = await cachedFetch(`nuccore|${id}|gb|all`, () => efetch('nuccore', id, 'gbwithparts'));
+  if (isStale()) return;
+  const { scaffolds, contigs, total } = masterMembers(gb, doc.sourcedb === 'refseq');
+  if (!total) {
+    body.innerHTML = '<p class="muted">This project record lists no sequences. See the GenBank tab, or the Genome card on the right.</p>';
+    return;
+  }
+  const accs = [...scaffolds, ...contigs].slice(0, MAX_CONTIGS);
+  const docs = [];
+  for (let i = 0; i < accs.length; i += 200) {
+    // Some listed contigs have no RefSeq copy; NCBI rejects the whole batch for one
+    // unknown accession, so drop it and ask again.
+    let batch = accs.slice(i, i + 200);
+    for (let tries = 0; batch.length && tries < 20; tries++) {
+      try {
+        docs.push(...await esummary('nuccore', batch));
+        break;
+      } catch (e) {
+        const bad = String(e.message).match(/Invalid uid (\S+)/)?.[1];
+        if (!bad) throw e;
+        batch = batch.filter((a) => a !== bad);
+      }
+    }
+  }
+  if (isStale()) return;
+  const n = docs.length;
+  body.innerHTML = `
+    <div class="notice">This is a <b>whole genome shotgun project</b> record. It describes the project and has no sequence of its own.
+      ${total > accs.length ? `The genome has ${fmtN(total)} sequences; the first ${fmtN(n)} are below.` : `The genome is in the ${fmtN(n)} sequence${n === 1 ? '' : 's'} below.`}
+      For FASTA of the whole genome, use the <b>Genome</b> card on the right.</div>
+    <ol class="results">${docs.map((d) => resultItemHtml('nuccore', d, { selectable: false })).join('')}</ol>`;
 }
 
 // --- Genome (NCBI Datasets) ----------------------------------------------------
@@ -1189,6 +1248,7 @@ async function renderTab(db, id, doc, tab, region, hasRegion, shownLen, token) {
   const safeId = id.replace(/[^\w.-]/g, '_');
   const suffix = hasRegion ? `_${region.from}-${region.to}${region.strand === '2' ? 'c' : ''}` : '';
 
+  if (doc.properties?.master === '1') shownLen = 0;
   const sizeLimit = tab === 'genbank' || tab === 'fasta' ? BIG_RECORD
     : tab === 'features' || tab === 'cds' ? 20 * BIG_RECORD : Infinity;
   if (shownLen > sizeLimit && !body.dataset.force) {
@@ -1207,6 +1267,10 @@ async function renderTab(db, id, doc, tab, region, hasRegion, shownLen, token) {
   try {
     if (tab === 'summary') {
       body.innerHTML = summaryTabHtml(db, doc);
+      return;
+    }
+    if (tab === 'contigs') {
+      await renderContigsTab(body, id, doc, isStale);
       return;
     }
     if (tab === 'abstract') {

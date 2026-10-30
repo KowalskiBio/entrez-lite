@@ -50,7 +50,7 @@ It's three files and a stylesheet. Open `index.html` and search.
   <tr>
     <td valign="top">
       <h3>Any region, either strand</h3>
-      Set a range under <b>Change region shown</b> and the GenBank, FASTA, feature and CDS views all follow it. A Gene record links its genomic location straight to that region of the chromosome.
+      Set a range under <b>Change region shown</b> and the GenBank, FASTA, feature and CDS views all follow it. A Gene record links its genomic location straight to that region of the chromosome. A WGS project record (the ones ending in <code>000000000</code>) has no sequence of its own, so it opens on a <b>Contigs</b> tab that lists its sequences.
     </td>
     <td valign="top">
       <h3>Follow the links</h3>
