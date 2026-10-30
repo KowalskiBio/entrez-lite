@@ -331,6 +331,8 @@ async function renderSearch(params, token) {
   const term = (params.get('term') || '').trim();
   const size = [20, 50, 100].includes(Number(params.get('size'))) ? Number(params.get('size')) : 20;
   const page = Math.max(1, Number(params.get('page')) || 1);
+  // Relevance is NCBI's own default on the website; E-utilities defaults to newest first.
+  const sort = params.get('sort') === 'date' ? 'date' : '';
   const f = readFilters(params);
   const fullTerm = buildTerm(db, term, f);
 
@@ -341,7 +343,7 @@ async function renderSearch(params, token) {
     </div>`;
 
   const baseParams = () => {
-    const p = { db, term, size: size === 20 ? '' : size };
+    const p = { db, term, size: size === 20 ? '' : size, sort };
     for (const [k, v] of Object.entries(f)) p['f_' + k] = v;
     return p;
   };
@@ -349,7 +351,7 @@ async function renderSearch(params, token) {
   $('#filters').addEventListener('submit', (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const p = { db, term, size: size === 20 ? '' : size };
+    const p = { db, term, size: size === 20 ? '' : size, sort };
     for (const [k, v] of fd) if (String(v).trim()) p['f_' + k] = String(v).trim();
     go('/search', p);
   });
@@ -378,9 +380,12 @@ async function renderSearch(params, token) {
 
   const results = $('#results');
   try {
-    const r = await esearch(db, fullTerm, { retstart: (page - 1) * size, retmax: size });
+    const esort = sort ? undefined : 'relevance';
+    const r = await esearch(db, fullTerm, { retstart: (page - 1) * size, retmax: size, sort: esort });
     if (token !== routeToken) return;
     const docs = await esummary(db, r.ids);
+    if (token !== routeToken) return;
+    const orgHint = await organismHint(db, term, f, r);
     if (token !== routeToken) return;
 
     Recent.add({ kind: 'search', db, label: [term, ...Object.values(f)].filter(Boolean).join(' · '), count: r.count, params: { ...baseParams() } });
@@ -391,8 +396,13 @@ async function renderSearch(params, token) {
     results.innerHTML = `
       <div class="results-head">
         <div><h2>${fmtN(r.count)} result${r.count === 1 ? '' : 's'}</h2><span class="muted">in ${esc(dbLabel(db))}${r.count ? ` · showing ${fmtN(from)}–${fmtN(to)}` : ''}</span></div>
-        <label class="inline">Per page <select id="size">${[20, 50, 100].map((n) => `<option${n === size ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
+        <div class="btn-row">
+          <label class="inline">Sort <select id="sort"><option value="">Relevance</option><option value="date"${sort ? ' selected' : ''}>Newest</option></select></label>
+          <label class="inline">Per page <select id="size">${[20, 50, 100].map((n) => `<option${n === size ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
+        </div>
       </div>
+      ${orgHint ? `<div class="notice">Your search also matched <b>${esc(orgHint.org)}</b> as plain text, so records from other organisms that only mention it are included.
+        <a href="${esc(orgHint.href)}">Show only <i>${esc(orgHint.org)}</i> (${fmtN(orgHint.count)})</a></div>` : ''}
       ${r.notFound.length ? `<div class="notice">Not found or ignored: <b>${esc(r.notFound.join(', '))}</b></div>` : ''}
       <details class="details">
         <summary>Search details</summary>
@@ -410,15 +420,35 @@ async function renderSearch(params, token) {
         ${paginationHtml(page, pages)}` : '<p class="muted">No records match. Try fewer words, or check the search details above.</p>'}`;
 
     $('#size')?.addEventListener('change', (e) => go('/search', { ...baseParams(), size: e.target.value }));
+    $('#sort')?.addEventListener('change', (e) => go('/search', { ...baseParams(), sort: e.target.value }));
     bindPager(results, (p) => go('/search', { ...baseParams(), page: p }), pages);
     bindSelection(results);
     bindDownload(results, db, docs, async () => {
-      const all = await esearch(db, fullTerm, { retmax: 500 });
+      const all = await esearch(db, fullTerm, { retmax: 500, sort: esort });
       return all.ids;
     });
   } catch (e) {
     if (token === routeToken) results.innerHTML = errorHtml(e);
   }
+}
+
+// NCBI turns a free-text organism name into ("X"[Organism] OR x[All Fields]), which
+// also pulls in other species whose records merely mention X. Offer the strict version.
+async function organismHint(db, term, f, r) {
+  if (!filterKeys(db).includes('org') || f.org) return null;
+  const m = r.translation.match(/\("([^"]+)"\[Organism\] OR [^)]*\[All Fields\]\)/);
+  if (!m) return null;
+  const org = m[1];
+  const words = org.toLowerCase().split(/\s+/);
+  const rest = term.split(/\s+/).filter((w) => !words.includes(w.toLowerCase())).join(' ');
+  const strict = { ...f, org };
+  try {
+    const { count } = await esearch(db, buildTerm(db, rest, strict), { retmax: 0 });
+    if (count >= r.count) return null;
+    const p = { db, term: rest };
+    for (const [k, v] of Object.entries(strict)) p['f_' + k] = v;
+    return { org, count, href: hashFor('/search', p) };
+  } catch { return null; }
 }
 
 function bindPager(root, onPage, pages) {

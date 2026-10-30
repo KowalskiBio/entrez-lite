@@ -36,7 +36,7 @@ It's three files and a stylesheet. Open `index.html` and search.
   <tr>
     <td width="33%" valign="top">
       <h3>Search like NCBI</h3>
-      Nucleotide, Protein, Gene, PubMed, PMC, Taxonomy, Assembly, BioProject, BioSample, SRA, Structure and more. Full Entrez syntax works, plus a filter sidebar for organism, gene name, molecule type, RefSeq vs. GenBank and sequence length.
+      Nucleotide, Protein, Gene, PubMed, PMC, Taxonomy, Assembly, BioProject, BioSample, SRA, Structure and more. Full Entrez syntax works, plus a filter sidebar for organism, gene name, molecule type, RefSeq vs. GenBank and sequence length. Results come sorted by relevance, like on NCBI. Type a species name as plain text and you get a one-click link to that organism only.
     </td>
     <td width="33%" valign="top">
       <h3>Get the gene out</h3>
