@@ -345,3 +345,4 @@ dialog::backdrop { background: rgb(10 14 20 / 0.45); }
   .searchbar select { width: 100%; }
   .hero h1 { font-size: 1.5rem; }
 }
+.genome-table td:last-child { white-space: nowrap; }

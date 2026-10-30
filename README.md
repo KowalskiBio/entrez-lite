@@ -79,7 +79,7 @@ Every contig and assembly record gets a **Genome** card in the sidebar. It finds
 - **Every sequence** in the assembly, each linked to its record
 - **A ZIP download** with genome FASTA, GFF, proteins and CDS
 
-You can also paste a `GCF_` or `GCA_` accession into the search box. Each type-strain match links to that genome's page, so you can follow a misassigned strain to the species it actually matches.
+You can also paste a `GCF_` or `GCA_` accession into the search box, or pick **Genome** in the database menu and search by organism. Genome search lists every assembly for a taxon with its level, size, contig count, CheckM score and ANI check, and filters by RefSeq or GenBank, assembly level, reference genomes, type strains and atypical assemblies. Partial names get suggestions as you type. Tick some rows to download an accession list, a CSV or a ZIP of the genomes. Each type-strain match links to that genome's page, so you can follow a misassigned strain to the species it actually matches.
 
 <p align="center">
   <img src="docs/images/genome.png" alt="Genome page for Pseudomonas fluorescens AU11706: taxonomy check inconclusive, best type match Pseudomonas saponiphila at 94.17% ANI" width="100%" />
@@ -107,6 +107,7 @@ NCBI allows 3 requests per second without an API key. Paste a free key into **Se
 | A human gene with its introns | Search Gene, open the record, click the genomic location link |
 | Just the mature CDS of that gene | From the same region, go to **Features**, pick the CDS row, click **Sequence** |
 | A record you already know | Paste the accession (`HQ288918.1`) into the search box |
+| Complete genomes of a species | Pick **Genome**, search `Pseudomonas fluorescens`, tick **Complete genome** |
 | To check a strain's species | Open any of its contigs and look at the **Genome** card, or paste the `GCF_` accession |
 | To see what NCBI did with your query | Open **Search details** above the results |
 

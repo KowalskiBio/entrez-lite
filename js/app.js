@@ -16,6 +16,7 @@ const DATABASES = [
   { id: 'nuccore', label: 'Nucleotide' },
   { id: 'protein', label: 'Protein' },
   { id: 'gene', label: 'Gene' },
+  { id: 'genome', label: 'Genome' },
   { id: 'pubmed', label: 'PubMed' },
   { id: 'pmc', label: 'PubMed Central' },
   { id: 'taxonomy', label: 'Taxonomy' },
@@ -37,6 +38,7 @@ const EXAMPLES = [
   { db: 'nuccore', term: 'nirK', f_org: 'Pseudomonas fluorescens' },
   { db: 'protein', term: 'copper-containing nitrite reductase', f_org: 'Pseudomonas', f_src: 'refseq' },
   { db: 'gene', term: 'nirK', f_org: 'Pseudomonas' },
+  { db: 'genome', term: 'Pseudomonas fluorescens', f_level: 'complete_genome' },
   { db: 'nuccore', term: '16S ribosomal RNA', f_org: 'Escherichia coli', f_min: '1400', f_max: '1600' },
   { db: 'pubmed', term: 'denitrification Pseudomonas fluorescens', f_from: '2020' },
 ];
@@ -325,6 +327,7 @@ const ACCESSION_RE = /^([A-Z]{1,2}_?[A-Z0-9]*\d{5,}(\.\d+)?|[A-Z]{1,4}\d{5,8}(\.
 
 async function renderSearch(params, token) {
   const db = params.get('db') || 'nuccore';
+  if (db === 'genome' && !GENOME_ACC_RE.test((params.get('term') || '').trim())) return renderGenomeSearch(params, token);
   const term = (params.get('term') || '').trim();
   const size = [20, 50, 100].includes(Number(params.get('size'))) ? Number(params.get('size')) : 20;
   const page = Math.max(1, Number(params.get('page')) || 1);
@@ -877,6 +880,211 @@ async function renderGenome(acc, token) {
   loadGenomeSequences(acc, '', token);
 }
 
+const ASSEMBLY_LEVELS = [
+  ['complete_genome', 'Complete genome'],
+  ['chromosome', 'Chromosome'],
+  ['scaffold', 'Scaffold'],
+  ['contig', 'Contig'],
+];
+
+function genomeFiltersHtml(f) {
+  const levels = (f.level || '').split(',');
+  const check = (name, label, on) => `<label class="check"><input type="checkbox" name="${name}" value="1"${on ? ' checked' : ''}> ${label}</label>`;
+  return `
+    <form class="filters" id="filters">
+      <h3>Filters</h3>
+      <label>Source<select name="src">
+        <option value="">RefSeq and GenBank</option>
+        <option value="refseq"${f.src === 'refseq' ? ' selected' : ''}>RefSeq only</option>
+        <option value="genbank"${f.src === 'genbank' ? ' selected' : ''}>GenBank only</option>
+      </select></label>
+      <fieldset><legend>Assembly level</legend>
+        ${ASSEMBLY_LEVELS.map(([v, l]) => `<label class="check"><input type="checkbox" name="level" value="${v}"${levels.includes(v) ? ' checked' : ''}> ${l}</label>`).join('')}
+      </fieldset>
+      <fieldset><legend>Only</legend>
+        ${check('ref', 'Reference genomes', f.ref)}
+        ${check('type', 'Type strains', f.type)}
+        ${check('atypical', 'Exclude atypical', f.atypical)}
+        ${check('exact', 'This taxon only, no subtaxa', f.exact)}
+      </fieldset>
+      <div class="filters-actions">
+        <button class="btn primary" type="submit">Apply</button>
+        <button class="btn ghost" type="button" id="clear-filters">Clear</button>
+      </div>
+    </form>`;
+}
+
+function genomeRowHtml(r) {
+  const org = r.organism || {};
+  const strain = org.infraspecific_names?.strain || org.infraspecific_names?.isolate || '';
+  const info = r.assembly_info || {};
+  const stats = r.assembly_stats || {};
+  const checkm = r.checkm_info;
+  const status = r.average_nucleotide_identity?.taxonomy_check_status;
+  const cls = { ok: 'ok', failed: 'fail', inconclusive: 'warn' }[String(status).toLowerCase()] || '';
+  const size = Number(stats.total_sequence_length);
+  return `<tr>
+    <td><input type="checkbox" class="sel" value="${esc(r.accession)}" aria-label="Select"></td>
+    <td><a class="mono" href="#/genome/${encodeURIComponent(r.accession)}">${esc(r.accession)}</a>
+      ${r.type_material ? '<span class="badge">type</span>' : ''}${info.refseq_category === 'reference genome' ? '<span class="badge">reference</span>' : ''}</td>
+    <td><i>${esc(org.organism_name)}</i>${strain && !String(org.organism_name).includes(strain) ? `<br><span class="muted small">${esc(strain)}</span>` : ''}</td>
+    <td>${esc(info.assembly_level)}</td>
+    <td class="num">${size ? (size / 1e6).toFixed(2) + ' Mb' : ''}</td>
+    <td class="num">${stats.number_of_contigs ? fmtN(stats.number_of_contigs) : ''}</td>
+    <td class="num">${checkm ? `${checkm.completeness}% / ${checkm.contamination}%` : '<span class="muted">n/a</span>'}</td>
+    <td>${status ? `<span class="pill ${cls}">${esc(status)}</span>` : '<span class="muted">n/a</span>'}</td>
+    <td class="muted">${esc(info.release_date)}</td>
+  </tr>`;
+}
+
+async function renderGenomeSearch(params, token) {
+  const term = (params.get('term') || '').trim();
+  const f = readFilters(params);
+  main.innerHTML = `
+    <div class="search-layout">
+      <aside>${genomeFiltersHtml(f)}</aside>
+      <section id="results">${term ? loadingHtml('Searching genomes') : '<p class="muted">Type an organism name or tax ID above, e.g. <i>Pseudomonas fluorescens</i>.</p>'}</section>
+    </div>`;
+
+  $('#filters').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    go('/search', {
+      db: 'genome', term,
+      f_src: fd.get('src'), f_level: fd.getAll('level').join(','),
+      f_ref: fd.get('ref'), f_type: fd.get('type'), f_atypical: fd.get('atypical'), f_exact: fd.get('exact'),
+    });
+  });
+  $('#clear-filters').addEventListener('click', () => go('/search', { db: 'genome', term }));
+  if (!term) return;
+
+  const results = $('#results');
+  try {
+    const first = await genomeSearch(term, f);
+    if (token !== routeToken) return;
+
+    if (!first.total) {
+      // Datasets needs a full taxon name; offer what the name suggester finds.
+      const hints = await taxonSuggest(term).catch(() => []);
+      if (token !== routeToken) return;
+      const keep = Object.fromEntries(Object.entries(f).map(([k, v]) => ['f_' + k, v]));
+      results.innerHTML = `
+        <h2>No genomes for "${esc(term)}"</h2>
+        ${hints.length ? `<p class="muted">Genome search needs a full taxon name or tax ID. Did you mean:</p>
+          <ul class="link-list">${hints.slice(0, 10).map((h) => `<li><a href="${hashFor('/search', { db: 'genome', term: h.name, ...keep })}"><i>${esc(h.name)}</i></a> <span class="muted">${esc(h.rank)} · tax ID ${esc(h.taxId)}</span></li>`).join('')}</ul>`
+          : '<p class="muted">Try a full species or genus name, or a tax ID. If filters are on, try clearing them.</p>'}`;
+      return;
+    }
+
+    Recent.add({ kind: 'search', db: 'genome', label: [term, ...(f.level || '').split(',').filter(Boolean).map(humanize)].join(' · '), count: first.total, params: Object.fromEntries(params) });
+
+    results.innerHTML = `
+      <div class="results-head">
+        <div><h2>${fmtN(first.total)} genome${first.total === 1 ? '' : 's'}</h2><span class="muted">for <i>${esc(term)}</i> · one row per assembly, RefSeq copy preferred</span></div>
+      </div>
+      <div class="toolbar">
+        <label class="check"><input type="checkbox" id="sel-all"> Select shown</label>
+        <span class="muted" id="sel-count"></span>
+        <div class="spacer"></div>
+        <div class="download">
+          <select id="dl-format">
+            <option value="acc">Accession list</option>
+            <option value="csv">Table (CSV)</option>
+            <option value="zip">Genome ZIP (FASTA, GFF, proteins)</option>
+          </select>
+          <button class="btn" id="dl-go">Download selected</button>
+        </div>
+      </div>
+      <div class="table-wrap genome-table"><table>
+        <thead><tr><th></th><th>Assembly</th><th>Organism</th><th>Level</th><th class="num">Size</th><th class="num">Contigs</th><th class="num">CheckM compl. / contam.</th><th>ANI check</th><th>Released</th></tr></thead>
+        <tbody id="genome-rows"></tbody>
+      </table></div>
+      <div class="pager" id="genome-more"></div>`;
+
+    const loaded = [];
+    const rows = $('#genome-rows');
+    const append = (page) => {
+      loaded.push(...page.reports);
+      rows.insertAdjacentHTML('beforeend', page.reports.map(genomeRowHtml).join(''));
+      $$('.sel', rows).forEach((c) => { c.onchange = updateCount; });
+      const more = $('#genome-more');
+      more.innerHTML = `<span class="muted">${fmtN(loaded.length)} of ${fmtN(first.total)} shown</span>
+        ${page.next ? '<button class="btn small" id="more-btn">Load 50 more</button>' : ''}`;
+      $('#more-btn')?.addEventListener('click', async (e) => {
+        e.target.disabled = true;
+        e.target.textContent = 'Loading…';
+        try {
+          const next = await genomeSearch(term, f, page.next);
+          if (token === routeToken) append(next);
+        } catch (err) {
+          toast(err.message);
+          e.target.disabled = false;
+        }
+      });
+    };
+    const updateCount = () => {
+      const n = $$('.sel:checked', rows).length;
+      $('#sel-count').textContent = n ? `${n} selected` : '';
+    };
+    $('#sel-all').addEventListener('change', (e) => {
+      $$('.sel', rows).forEach((c) => { c.checked = e.target.checked; });
+      updateCount();
+    });
+    $('#dl-go').addEventListener('click', () => {
+      const ids = $$('.sel:checked', rows).map((c) => c.value);
+      if (!ids.length) return toast('Select some genomes first.');
+      const format = $('#dl-format').value;
+      const stamp = new Date().toISOString().slice(0, 10);
+      if (format === 'zip') {
+        if (ids.length > 25) return toast('Pick 25 genomes or fewer for one ZIP.');
+        location.href = genomeDownloadUrl(ids);
+        return;
+      }
+      if (format === 'acc') return saveFile(`genomes_${ids.length}_${stamp}.txt`, ids.join('\n') + '\n');
+      const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const picked = loaded.filter((r) => ids.includes(r.accession));
+      const table = [['accession', 'organism', 'strain', 'level', 'length', 'contigs', 'gc_percent', 'checkm_completeness', 'checkm_contamination', 'ani_check', 'best_ani_match', 'best_ani', 'type_material', 'released'],
+        ...picked.map((r) => {
+          const ani = r.average_nucleotide_identity;
+          return [r.accession, r.organism?.organism_name, r.organism?.infraspecific_names?.strain, r.assembly_info?.assembly_level,
+            r.assembly_stats?.total_sequence_length, r.assembly_stats?.number_of_contigs, r.assembly_stats?.gc_percent,
+            r.checkm_info?.completeness, r.checkm_info?.contamination, ani?.taxonomy_check_status,
+            ani?.best_ani_match?.organism_name, ani?.best_ani_match?.ani, r.type_material ? 'yes' : '', r.assembly_info?.release_date];
+        })];
+      saveFile(`genomes_${ids.length}_${stamp}.csv`, table.map((row) => row.map(cell).join(',')).join('\n') + '\n');
+    });
+    append(first);
+  } catch (e) {
+    if (token === routeToken) results.innerHTML = errorHtml(e);
+  }
+}
+
+// Organism-name suggestions for the search box while Genome is selected.
+function bindTaxonSuggest() {
+  const input = $('#q');
+  const list = $('#taxon-suggest');
+  let timer;
+  let last = '';
+  input.addEventListener('input', () => {
+    clearTimeout(timer);
+    const text = input.value.trim();
+    if ($('#db').value !== 'genome' || text.length < 3 || text === last) return;
+    timer = setTimeout(async () => {
+      last = text;
+      try {
+        const hints = await taxonSuggest(text);
+        list.innerHTML = hints.slice(0, 12).map((h) => `<option value="${esc(h.name)}">${esc(h.rank)}</option>`).join('');
+      } catch { /* suggestions are optional */ }
+    }, 300);
+  });
+  const sync = () => {
+    if ($('#db').value === 'genome') input.setAttribute('list', 'taxon-suggest');
+    else input.removeAttribute('list');
+  };
+  $('#db').addEventListener('change', sync);
+  sync();
+}
+
 async function loadGenomeSequences(acc, pageToken, token) {
   const rows = $('#seq-rows');
   const more = $('#seq-more');
@@ -1221,6 +1429,7 @@ function init() {
     }
     go('/search', { db, term, ...keep });
   });
+  bindTaxonSuggest();
   $('#settings-btn').addEventListener('click', openSettings);
   $('#theme-btn').addEventListener('click', toggleTheme);
   $('#modal-close').addEventListener('click', () => $('#modal').close());

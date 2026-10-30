@@ -18,6 +18,7 @@
         <select id="db" aria-label="Database"></select>
         <input id="q" type="search" placeholder="Search NCBI, e.g. nirK or HQ288918.1" aria-label="Search term" autocomplete="off">
         <button class="btn primary" type="submit">Search</button>
+        <datalist id="taxon-suggest"></datalist>
       </form>
       <div class="top-actions">
         <button class="icon-btn" id="theme-btn" title="Toggle theme" aria-label="Toggle theme">
@@ -33,7 +34,7 @@
   <main id="main" class="container"></main>
 
   <footer class="container footer muted">
-    Data from NCBI E-utilities. Not affiliated with NCBI.
+    Data from NCBI E-utilities and NCBI Datasets. Not affiliated with NCBI.
   </footer>
 
   <dialog id="modal">

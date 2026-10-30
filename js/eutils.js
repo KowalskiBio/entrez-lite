@@ -180,10 +180,33 @@ async function genomeSequences(accession, pageToken = '') {
   return { reports: data.reports || [], total: data.total_count || 0, next: data.next_page_token || '' };
 }
 
-function genomeDownloadUrl(accession) {
+function genomeDownloadUrl(accessions) {
+  const ids = [].concat(accessions).map(encodeURIComponent).join(',');
   const qs = ['GENOME_FASTA', 'GENOME_GFF', 'PROT_FASTA', 'CDS_FASTA']
     .map((t) => `include_annotation_type=${t}`).join('&');
-  return `${DATASETS_BASE}genome/accession/${encodeURIComponent(accession)}/download?${qs}`;
+  return `${DATASETS_BASE}genome/accession/${ids}/download?${qs}`;
+}
+
+// Genomes for a taxon name or tax ID. `taxon` must be a full name ("Pseudomonas
+// fluorescens") or a tax ID; use taxonSuggest() to turn partial input into one.
+async function genomeSearch(taxon, f = {}, pageToken = '') {
+  const qs = new URLSearchParams({ page_size: '50', 'filters.exclude_paired_reports': 'true' });
+  if (f.src) qs.set('filters.assembly_source', f.src);
+  for (const level of (f.level || '').split(',').filter(Boolean)) qs.append('filters.assembly_level', level);
+  if (f.ref) qs.set('filters.reference_only', 'true');
+  if (f.type) qs.set('filters.is_type_material', 'true');
+  if (f.atypical) qs.set('filters.exclude_atypical', 'true');
+  if (f.exact) qs.set('tax_exact_match', 'true');
+  if (pageToken) qs.set('page_token', pageToken);
+  const data = await datasetsRequest(`genome/taxon/${encodeURIComponent(taxon)}/dataset_report?${qs}`);
+  return { reports: data.reports || [], total: data.total_count || 0, next: data.next_page_token || '' };
+}
+
+async function taxonSuggest(text) {
+  const data = await datasetsRequest(`taxonomy/taxon_suggest/${encodeURIComponent(text)}`);
+  return (data.sci_name_and_ids || []).map((t) => ({
+    name: t.sci_name, taxId: t.tax_id, rank: (t.rank || '').toLowerCase().replace(/_/g, ' '), matched: t.matched_term,
+  }));
 }
 
 // The assembly a sequence record belongs to, as a GCF_ (RefSeq) or GCA_ accession.
