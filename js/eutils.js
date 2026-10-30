@@ -143,6 +143,18 @@ async function elinkNeighbor(dbfrom, id, linkname) {
 // sequence rather than copied from a neighbour, and it gets those cases right, so
 // these two calls search a record by domain instead of by annotation text.
 
+// CDD search is a text search over the whole record, so a domain matches when the
+// gene is merely mentioned in its abstract: "norB" returns three heme-d1 propellers
+// that belong to the nirS branch and are not NorB at all. Rank the gene-level models
+// (COG, TIGR, PRK) above single domains and superfamily clusters above nothing, and
+// put a short name equal to the search term first.
+const DOMAIN_FAMILY_RANK = { COG: 0, TIGR: 0, PRK: 0, pfam: 1, smart: 1, cd: 2, cl: 3 };
+
+function domainRank(accession, title, term) {
+  const family = DOMAIN_FAMILY_RANK[(accession.match(/^[A-Za-z]+/) || [''])[0]] ?? 2;
+  return (title.toLowerCase() === term.toLowerCase() ? 0 : 4) + family;
+}
+
 async function cddSearch(term, { retmax = 20 } = {}) {
   const { ids } = await esearch('cdd', term, { retmax });
   if (!ids.length) return [];
@@ -151,7 +163,9 @@ async function cddSearch(term, { retmax = 20 } = {}) {
     uid: String(d.uid),
     accession: d.accession || '',
     title: d.title || d.accession || String(d.uid),
-  }));
+    // What the domain actually is, in words. The short name alone cannot be trusted.
+    definition: d.subtitle || '',
+  })).sort((a, b) => domainRank(a.accession, a.title, term) - domainRank(b.accession, b.title, term));
 }
 
 function historyKey(data, linkname) {

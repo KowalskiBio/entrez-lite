@@ -173,6 +173,18 @@ legend { font-size: 0.85rem; font-weight: 500; margin-bottom: 4px; padding: 0; }
 .link-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .link-list.compact { gap: 4px; font-size: 0.9rem; }
 .link-list .muted { font-size: 0.8rem; }
+
+/* A conserved domain's short name is not enough to choose by — the definition
+   under it is what separates NorB from a propeller that merely mentions NorB. */
+.link-list.domains { gap: 6px; margin-top: 8px; }
+.domain-pick {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+  background: var(--surface); color: inherit;
+}
+.domain-pick:hover { border-color: var(--accent); background: var(--surface-2); }
+.domain-pick b { font-family: var(--mono); font-size: 0.85rem; }
+.domain-pick .muted { display: block; margin-top: 2px; line-height: 1.4; }
 .tips { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 0.9rem; }
 .db-chip {
   display: inline-block; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em;

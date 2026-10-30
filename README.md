@@ -72,11 +72,13 @@ It's three files and a stylesheet. Open `index.html` and search.
 
 Product names are assigned automatically, and they are wrong often enough to matter. NCBI's pipeline calls most *norB* genes `cbb3-type cytochrome c oxidase subunit I` — a different enzyme — and gives them no `gene=` qualifier. Filter the CDS tab of `NZ_CP027720.1` for `norB` and you get nothing, from 6252 coding sequences, for a gene that is right there.
 
-So when a filter matches nothing, the CDS tab offers to search **conserved domains** instead. These are computed from sequence, not copied from a neighbour, and in that record the protein's domain is `COG3256 — NorB` while its product name still says cbb3 oxidase. NCBI's own data disagrees with itself, and the domain is the half that's right.
+So when a filter matches nothing, the **CDS** and **Features** tabs both offer to search **conserved domains** instead. These are computed from sequence, not copied from a neighbour, and in that record the protein's domain is `COG3256 — NorB` while its product name still says cbb3 oxidase. NCBI's own data disagrees with itself, and the domain is the half that's right.
 
-Pick a domain from the list and you get the coding sequences whose proteins carry it, with the name the record uses shown next to them. It costs four requests no matter how large the genome: both sides of the comparison go into an Entrez history session and the intersection happens on the server.
+Pick a domain and you get the coding sequences, or the feature rows, whose proteins carry it — with the name the record uses shown next to them. It costs four requests no matter how large the genome: both sides of the comparison go into an Entrez history session and the intersection happens on the server.
 
-Two limits worth knowing. The domain name search is fuzzy — `nirK` surfaces `NnrU` and `NnrS`, which are different genes — so the matches are listed for you to choose from rather than picked for you. And not every protein has a domain assignment: several *nosZ* proteins have none at all, so an empty result is not evidence of absence, and the app says so rather than implying otherwise.
+The catch is that CDD searches *text*, so a domain can match because its description merely mentions your gene. Searching `norB` returns three eight-bladed propellers from the *nirS* branch whose abstracts contain the sentence "the integral membrane proteins NorC, **NorB**, and NosR…". So each match is listed with its definition underneath — `COG3256` reads *Nitric oxide reductase large subunit*, the propellers read *heme d₁-binding β-propeller* — and gene-level `COG`, `TIGR` and `PRK` models sort above single `cd` domains and `cl` superfamily clusters.
+
+One more limit: not every protein has a domain assignment. Several *nosZ* proteins have none at all, so an empty result is not evidence of absence, and the app says so rather than implying otherwise.
 
 ### Is it really the species it says?
 
@@ -113,7 +115,7 @@ NCBI allows 3 requests per second without an API key. Paste a free key into **Se
 | You want | Do this |
 |---|---|
 | One gene from a bacterial genome | Open the genome or contig, go to **CDS**, type the gene name, then **Download** |
-| The same gene when the name finds nothing | Stay on **CDS** and use **Search conserved domains instead**, then pick the domain |
+| The same gene when the name finds nothing | On **CDS** or **Features**, use **Search conserved domains instead**, then pick the domain whose definition names your enzyme |
 | The same gene from many strains | Search Protein for `nirK[Gene Name] AND "Pseudomonas"[Organism]`, choose **All results** (up to 500) and **FASTA** |
 | A human gene with its introns | Search Gene, open the record, click the genomic location link |
 | Just the mature CDS of that gene | From the same region, go to **Features**, pick the CDS row, click **Sequence** |
