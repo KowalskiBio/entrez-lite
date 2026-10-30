@@ -134,6 +134,70 @@ async function elinkNeighbor(dbfrom, id, linkname) {
   return { dbto: set?.dbto || linkname.split('_')[1], ids: set?.links || [] };
 }
 
+// --- NCBI Datasets v2 --------------------------------------------------------
+
+// Genome reports (assembly stats, CheckM, ANI taxonomy check) come from the Datasets
+// API, which also allows cross-origin calls and shares the E-utilities API key.
+const DATASETS_BASE = 'https://api.ncbi.nlm.nih.gov/datasets/v2/';
+
+async function datasetsRequest(path) {
+  const apiKey = Settings.get('apiKey');
+  const headers = apiKey ? { 'api-key': apiKey } : {};
+  for (let attempt = 0; ; attempt++) {
+    await throttle();
+    let res;
+    try {
+      res = await fetch(DATASETS_BASE + path, { headers });
+    } catch {
+      if (attempt < 2) { await sleep(600); continue; }
+      throw new EutilsError('Network error: could not reach the NCBI Datasets API.');
+    }
+    if ((res.status === 429 || res.status >= 500) && attempt < 3) {
+      await sleep(800 * 2 ** attempt);
+      continue;
+    }
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch {
+      throw new EutilsError(`NCBI Datasets returned HTTP ${res.status} without data.`);
+    }
+    if (!res.ok) throw new EutilsError(data.message || data.error || `NCBI Datasets returned HTTP ${res.status}.`);
+    return data;
+  }
+}
+
+async function genomeReport(accession) {
+  const data = await datasetsRequest(`genome/accession/${encodeURIComponent(accession)}/dataset_report`);
+  const report = data.reports?.[0];
+  if (!report) throw new EutilsError(`No genome found for "${accession}".`);
+  return report;
+}
+
+async function genomeSequences(accession, pageToken = '') {
+  const qs = new URLSearchParams({ page_size: '100' });
+  if (pageToken) qs.set('page_token', pageToken);
+  const data = await datasetsRequest(`genome/accession/${encodeURIComponent(accession)}/sequence_reports?${qs}`);
+  return { reports: data.reports || [], total: data.total_count || 0, next: data.next_page_token || '' };
+}
+
+function genomeDownloadUrl(accession) {
+  const qs = ['GENOME_FASTA', 'GENOME_GFF', 'PROT_FASTA', 'CDS_FASTA']
+    .map((t) => `include_annotation_type=${t}`).join('&');
+  return `${DATASETS_BASE}genome/accession/${encodeURIComponent(accession)}/download?${qs}`;
+}
+
+// The assembly a sequence record belongs to, as a GCF_ (RefSeq) or GCA_ accession.
+async function assemblyAccessionFor(db, uid) {
+  let ids = [uid];
+  if (db !== 'assembly') {
+    ({ ids } = await elinkNeighbor(db, uid, `${db}_assembly`));
+    if (!ids.length) return null;
+  }
+  const [doc] = await esummary('assembly', ids.slice(0, 1));
+  if (!doc) return null;
+  return doc.synonym?.refseq || doc.assemblyaccession || doc.synonym?.genbank || null;
+}
+
 // --- Parsers ---------------------------------------------------------------
 
 // Parses NCBI's five-column feature table (efetch rettype=ft). A table fetched for a

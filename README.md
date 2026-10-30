@@ -68,6 +68,23 @@ It's three files and a stylesheet. Open `index.html` and search.
   <img src="docs/images/cds.png" alt="CDS tab listing all coding sequences of a Pseudomonas fluorescens contig" width="49%" />
 </p>
 
+### Is it really the species it says?
+
+Every contig and assembly record gets a **Genome** card in the sidebar. It finds the assembly the sequence belongs to (`GCF_` if there is a RefSeq copy, `GCA_` otherwise) and shows NCBI's ANI taxonomy check right there. **Genome & ANI** opens the full genome page:
+
+- **ANI** against the best type-strain match and against the type strain of the submitted species, with ANI and coverage for both
+- **CheckM** completeness and contamination
+- **Assembly statistics:** length, GC, contigs, N50, L50, coverage
+- **Annotation** gene counts and the **sequencing** details
+- **Every sequence** in the assembly, each linked to its record
+- **A ZIP download** with genome FASTA, GFF, proteins and CDS
+
+You can also paste a `GCF_` or `GCA_` accession into the search box. Each type-strain match links to that genome's page, so you can follow a misassigned strain to the species it actually matches.
+
+<p align="center">
+  <img src="docs/images/genome.png" alt="Genome page for Pseudomonas fluorescens AU11706: taxonomy check inconclusive, best type match Pseudomonas saponiphila at 94.17% ANI" width="100%" />
+</p>
+
 ## Run it
 
 **Online:** [kowalskibio.github.io/entrez-lite](https://kowalskibio.github.io/entrez-lite/)
@@ -90,6 +107,7 @@ NCBI allows 3 requests per second without an API key. Paste a free key into **Se
 | A human gene with its introns | Search Gene, open the record, click the genomic location link |
 | Just the mature CDS of that gene | From the same region, go to **Features**, pick the CDS row, click **Sequence** |
 | A record you already know | Paste the accession (`HQ288918.1`) into the search box |
+| To check a strain's species | Open any of its contigs and look at the **Genome** card, or paste the `GCF_` accession |
 | To see what NCBI did with your query | Open **Search details** above the results |
 
 ## How it works
@@ -97,11 +115,11 @@ NCBI allows 3 requests per second without an API key. Paste a free key into **Se
 ```
 index.html        page shell
 css/styles.css    light and dark theme, one set of tokens
-js/eutils.js      E-utilities client: throttling, retries, FASTA and feature table parsers
+js/eutils.js      E-utilities and Datasets clients: throttling, retries, parsers
 js/app.js         hash router and all the views
 ```
 
-Everything goes through [E-utilities](https://www.ncbi.nlm.nih.gov/books/NBK25501/): `esearch` for hits, `esummary` for the result list, `efetch` for GenBank, FASTA, feature tables and CDS, and `elink` for related records. NCBI sends `Access-Control-Allow-Origin: *` on these endpoints, so the browser calls them directly and no proxy is needed.
+Everything goes through [E-utilities](https://www.ncbi.nlm.nih.gov/books/NBK25501/): `esearch` for hits, `esummary` for the result list, `efetch` for GenBank, FASTA, feature tables and CDS, and `elink` for related records. Genome pages come from the [Datasets v2 API](https://www.ncbi.nlm.nih.gov/datasets/docs/v2/api/), which provides the assembly report, CheckM, ANI and the sequence list. Both services allow cross-origin requests, so the browser calls them directly and no proxy is needed.
 
 A few details that took some testing:
 

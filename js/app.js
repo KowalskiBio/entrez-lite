@@ -30,7 +30,8 @@ const DATABASES = [
   { id: 'clinvar', label: 'ClinVar' },
   { id: 'mesh', label: 'MeSH' },
 ];
-const dbLabel = (id) => DATABASES.find((d) => d.id === id)?.label || id;
+const dbLabel = (id) => (id === 'genome' ? 'Genome' : DATABASES.find((d) => d.id === id)?.label || id);
+const GENOME_ACC_RE = /^GC[AF]_\d{9}(\.\d+)?$/i;
 
 const EXAMPLES = [
   { db: 'nuccore', term: 'nirK', f_org: 'Pseudomonas fluorescens' },
@@ -265,6 +266,7 @@ function route() {
   if (parts[0] === 'search') return renderSearch(params, token);
   if (parts[0] === 'record' && parts[1] && parts[2]) return renderRecord(parts[1], parts[2], params, token);
   if (parts[0] === 'links' && parts[3]) return renderLinks(parts[1], parts[2], parts[3], params, token);
+  if (parts[0] === 'genome' && parts[1]) return renderGenome(parts[1], token);
   return renderHome();
 }
 
@@ -286,7 +288,7 @@ function renderHome() {
   };
   const recentLink = (r) => r.kind === 'search'
     ? `<li><a href="${hashFor('/search', r.params)}"><span class="db-chip">${esc(dbLabel(r.db))}</span>${esc(r.label)} <span class="muted">(${fmtN(r.count)})</span></a></li>`
-    : `<li><a href="#/record/${r.db}/${encodeURIComponent(r.id)}"><span class="db-chip">${esc(dbLabel(r.db))}</span>${esc(r.label)}</a></li>`;
+    : `<li><a href="${r.db === 'genome' ? '#/genome/' : `#/record/${r.db}/`}${encodeURIComponent(r.id)}"><span class="db-chip">${esc(dbLabel(r.db))}</span>${esc(r.label)}</a></li>`;
 
   main.innerHTML = `
     <section class="home">
@@ -351,6 +353,12 @@ async function renderSearch(params, token) {
   $('#clear-filters').addEventListener('click', () => go('/search', { db, term }));
 
   if (!fullTerm) return;
+
+  // GCF_/GCA_ accessions open the genome page whatever database is selected.
+  if (GENOME_ACC_RE.test(term)) {
+    history.replaceState(null, '', `#/genome/${encodeURIComponent(term.toUpperCase())}`);
+    return renderGenome(term.toUpperCase(), token);
+  }
 
   // A bare accession goes straight to its record, like on NCBI.
   if (SEQ_DBS.has(db) && ACCESSION_RE.test(term) && !Object.keys(f).length && page === 1) {
@@ -646,6 +654,7 @@ async function renderRecord(db, id, params, token) {
               <li><a href="${ncbiUrl}" target="_blank" rel="noopener">Open on NCBI ↗</a></li>
             </ul>
           </div>
+          ${db === 'nuccore' || db === 'assembly' ? `<div class="card" id="genome-card"><h3>Genome</h3>${loadingHtml('Finding assembly')}</div>` : ''}
           <div class="card" id="related"><h3>Related information</h3>${loadingHtml('Checking links')}</div>
         </aside>
       </div>
@@ -667,7 +676,231 @@ async function renderRecord(db, id, params, token) {
   };
   $$('.tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
   renderTab(db, id, doc, tab, region, hasRegion, shownLen, token);
+  if ($('#genome-card')) renderGenomeCard(db, doc.uid, token);
   renderRelated(db, doc.uid, token);
+}
+
+// --- Genome (NCBI Datasets) ----------------------------------------------------
+
+const genomeCache = new Map();
+
+function getGenomeReport(acc) {
+  if (!genomeCache.has(acc)) {
+    const p = genomeReport(acc);
+    genomeCache.set(acc, p);
+    p.catch(() => genomeCache.delete(acc));
+  }
+  return genomeCache.get(acc);
+}
+
+const datasetsPageUrl = (acc) => `https://www.ncbi.nlm.nih.gov/datasets/genome/${encodeURIComponent(acc)}/`;
+
+// NCBI's taxonomy check status: OK, Inconclusive or Failed.
+function aniStatusHtml(ani) {
+  if (!ani) return '<span class="pill">no ANI result</span>';
+  const s = String(ani.taxonomy_check_status || '').toLowerCase();
+  const cls = s === 'ok' ? 'ok' : s === 'failed' ? 'fail' : 'warn';
+  return `<span class="pill ${cls}">Taxonomy check: ${esc(ani.taxonomy_check_status || 'unknown')}</span>`;
+}
+
+const humanize = (s) => String(s || '').replace(/_/g, ' ');
+
+async function renderGenomeCard(db, uid, token) {
+  const box = $('#genome-card');
+  try {
+    const acc = await assemblyAccessionFor(db, uid);
+    if (token !== routeToken) return;
+    if (!acc) { box.innerHTML = '<h3>Genome</h3><p class="muted">Not part of an assembly in NCBI Datasets.</p>'; return; }
+    const r = await getGenomeReport(acc);
+    if (token !== routeToken) return;
+    const ani = r.average_nucleotide_identity;
+    const best = ani?.best_ani_match;
+    box.innerHTML = `
+      <h3>Genome</h3>
+      <a class="genome-acc" href="#/genome/${encodeURIComponent(acc)}">${esc(acc)}</a>
+      <div class="muted small">${esc(r.organism?.organism_name)}${r.organism?.infraspecific_names?.strain ? ` ${esc(r.organism.infraspecific_names.strain)}` : ''} · ${esc(r.assembly_info?.assembly_level)}</div>
+      ${aniStatusHtml(ani)}
+      ${best ? `<div class="small">Best type match: <i>${esc(best.organism_name)}</i>, <b>${esc(best.ani)}%</b> ANI</div>` : ''}
+      <div class="btn-row">
+        <a class="btn small primary" href="#/genome/${encodeURIComponent(acc)}">Genome & ANI</a>
+        <a class="btn small" href="${datasetsPageUrl(acc)}" target="_blank" rel="noopener">Datasets ↗</a>
+      </div>`;
+  } catch (e) {
+    if (token === routeToken) box.innerHTML = `<h3>Genome</h3><p class="muted small">Could not load: ${esc(e.message)}</p>`;
+  }
+}
+
+function statGrid(items) {
+  return `<dl class="stat-grid">${items.filter(([, v]) => v !== undefined && v !== null && v !== '')
+    .map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join('')}</dl>`;
+}
+
+function aniMatchRow(label, m) {
+  if (!m) return '';
+  return `<tr>
+    <th>${esc(label)}</th>
+    <td><i>${esc(m.organism_name)}</i><br><a href="#/genome/${encodeURIComponent(m.assembly)}">${esc(m.assembly)}</a> <span class="muted">${esc(humanize(m.category))}</span></td>
+    <td class="num"><b>${esc(m.ani)}%</b></td>
+    <td class="num">${esc(m.assembly_coverage)}%</td>
+    <td class="num">${esc(m.type_assembly_coverage)}%</td>
+  </tr>`;
+}
+
+async function renderGenome(acc, token) {
+  main.innerHTML = loadingHtml('Loading genome from NCBI Datasets');
+  let r;
+  try {
+    r = await getGenomeReport(acc);
+  } catch (e) {
+    if (token === routeToken) main.innerHTML = errorHtml(e);
+    return;
+  }
+  if (token !== routeToken) return;
+
+  const org = r.organism || {};
+  const info = r.assembly_info || {};
+  const stats = r.assembly_stats || {};
+  const checkm = r.checkm_info;
+  const annot = r.annotation_info;
+  const ani = r.average_nucleotide_identity;
+  const strain = org.infraspecific_names?.strain || org.infraspecific_names?.isolate || '';
+  const title = `${org.organism_name || acc}${strain && !String(org.organism_name).includes(strain) ? ' ' + strain : ''}`;
+  Recent.add({ kind: 'record', db: 'genome', id: acc, label: `${acc} ${title}` });
+
+  const n = (v) => (v === undefined || v === null || v === '' ? '' : fmtN(v));
+  const genes = annot?.stats?.gene_counts;
+  const bioproject = info.bioproject_accession;
+  const biosample = info.biosample?.accession;
+
+  main.innerHTML = `
+    <article class="record">
+      <header class="record-head">
+        <span class="db-chip">Genome</span>
+        <h1>${esc(title)}</h1>
+        <div class="meta">${[acc, info.assembly_name, info.assembly_level, info.assembly_status, info.release_date && `released ${info.release_date}`, info.submitter]
+          .filter(Boolean).map((m) => `<span>${esc(m)}</span>`).join('')}</div>
+      </header>
+      <div class="record-layout">
+        <div class="record-main genome-main">
+          <section class="card">
+            <div class="card-head"><h3>Average nucleotide identity</h3>${aniStatusHtml(ani)}</div>
+            ${ani ? `
+              <p class="small muted">NCBI compares each prokaryotic assembly with type-strain assemblies. Two genomes are usually the same species above about 95% ANI.
+              Result: <b>${esc(humanize(ani.match_status))}</b>, submitted as <i>${esc(ani.submitted_organism)}</i>.</p>
+              <div class="table-wrap"><table>
+                <thead><tr><th></th><th>Type assembly</th><th class="num">ANI</th><th class="num">Query coverage</th><th class="num">Type coverage</th></tr></thead>
+                <tbody>
+                  ${aniMatchRow('Best match', ani.best_ani_match)}
+                  ${ani.submitted_ani_match && ani.submitted_ani_match.assembly !== ani.best_ani_match?.assembly ? aniMatchRow('Submitted species', ani.submitted_ani_match) : ''}
+                </tbody>
+              </table></div>
+              ${ani.comment && ani.comment !== 'na' ? `<p class="small">${esc(ani.comment)}</p>` : ''}`
+            : '<p class="muted">NCBI has no ANI result for this assembly. The check only runs on prokaryotic genomes.</p>'}
+          </section>
+
+          <div class="genome-grid">
+            <section class="card">
+              <h3>Assembly statistics</h3>
+              ${statGrid([
+                ['Total length', stats.total_sequence_length && `${n(stats.total_sequence_length)} bp`],
+                ['GC', stats.gc_percent !== undefined ? `${stats.gc_percent}%` : ''],
+                ['Contigs', n(stats.number_of_contigs)],
+                ['Contig N50', stats.contig_n50 && `${n(stats.contig_n50)} bp`],
+                ['Contig L50', n(stats.contig_l50)],
+                ['Scaffolds', n(stats.number_of_scaffolds)],
+                ['Scaffold N50', stats.scaffold_n50 && `${n(stats.scaffold_n50)} bp`],
+                ['Coverage', stats.genome_coverage && `${esc(stats.genome_coverage)}×`],
+              ])}
+            </section>
+            <section class="card">
+              <h3>Completeness (CheckM)</h3>
+              ${checkm ? statGrid([
+                ['Completeness', `${checkm.completeness}%`],
+                ['Contamination', `${checkm.contamination}%`],
+                ['Percentile', checkm.completeness_percentile !== undefined ? `${Math.round(checkm.completeness_percentile)}th` : ''],
+                ['Marker set', `<i>${esc(checkm.checkm_marker_set)}</i> <span class="muted">(${esc(checkm.checkm_marker_set_rank)})</span>`],
+              ]) : '<p class="muted">No CheckM result.</p>'}
+            </section>
+            <section class="card">
+              <h3>Annotation</h3>
+              ${annot ? statGrid([
+                ['Provider', esc(annot.provider)],
+                ['Released', esc(annot.release_date)],
+                ['Genes', n(genes?.total)],
+                ['Protein coding', n(genes?.protein_coding)],
+                ['Non-coding', n(genes?.non_coding)],
+                ['Pseudogenes', n(genes?.pseudogene)],
+              ]) : '<p class="muted">Not annotated.</p>'}
+            </section>
+            <section class="card">
+              <h3>Sequencing</h3>
+              ${statGrid([
+                ['Technology', esc(info.sequencing_tech)],
+                ['Assembler', esc(info.assembly_method)],
+                ['Type', esc(info.assembly_type)],
+                ['Tax ID', org.tax_id && `<a href="#/record/taxonomy/${org.tax_id}">${org.tax_id}</a>`],
+              ])}
+            </section>
+          </div>
+
+          <section>
+            <div class="card-head"><h3>Sequences</h3><span class="muted small" id="seq-count"></span></div>
+            <div class="table-wrap"><table>
+              <thead><tr><th>Name</th><th>Accession</th><th>Role</th><th class="num">Length</th><th class="num">GC</th></tr></thead>
+              <tbody id="seq-rows"></tbody>
+            </table></div>
+            <div id="seq-more"></div>
+          </section>
+        </div>
+
+        <aside class="record-side">
+          <div class="card">
+            <h3>Get this genome</h3>
+            <ul class="link-list compact">
+              <li><a href="${genomeDownloadUrl(acc)}">Download ZIP</a> <span class="muted">FASTA, GFF, proteins, CDS</span></li>
+              <li><a href="${datasetsPageUrl(acc)}" target="_blank" rel="noopener">Open in NCBI Datasets ↗</a></li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Related information</h3>
+            <ul class="link-list compact">
+              ${r.paired_accession ? `<li><a href="#/genome/${encodeURIComponent(r.paired_accession)}">${esc(r.paired_accession)}</a> <span class="muted">${r.paired_accession.startsWith('GCF') ? 'RefSeq' : 'GenBank'} copy</span></li>` : ''}
+              ${bioproject ? `<li><a href="${hashFor('/search', { db: 'bioproject', term: bioproject })}">BioProject ${esc(bioproject)}</a></li>` : ''}
+              ${biosample ? `<li><a href="${hashFor('/search', { db: 'biosample', term: biosample })}">BioSample ${esc(biosample)}</a></li>` : ''}
+              ${org.tax_id ? `<li><a href="#/record/taxonomy/${org.tax_id}">Taxonomy</a></li>` : ''}
+            </ul>
+          </div>
+        </aside>
+      </div>
+    </article>`;
+
+  loadGenomeSequences(acc, '', token);
+}
+
+async function loadGenomeSequences(acc, pageToken, token) {
+  const rows = $('#seq-rows');
+  const more = $('#seq-more');
+  more.innerHTML = loadingHtml('Loading sequences');
+  try {
+    const page = await genomeSequences(acc, pageToken);
+    if (token !== routeToken) return;
+    rows.insertAdjacentHTML('beforeend', page.reports.map((s) => {
+      const seqAcc = s.refseq_accession && s.refseq_accession !== 'na' ? s.refseq_accession : s.genbank_accession;
+      return `<tr>
+        <td>${esc(s.chr_name && s.role === 'assembled-molecule' ? s.chr_name : s.sequence_name || s.chr_name)}</td>
+        <td><a href="#/record/nuccore/${encodeURIComponent(seqAcc)}">${esc(seqAcc)}</a></td>
+        <td class="muted">${esc(humanize(s.role))}</td>
+        <td class="num">${fmtN(s.length)}</td>
+        <td class="num">${s.gc_percent !== undefined ? `${s.gc_percent}%` : ''}</td>
+      </tr>`;
+    }).join(''));
+    const shown = rows.children.length;
+    $('#seq-count').textContent = `${fmtN(shown)} of ${fmtN(page.total)}`;
+    more.innerHTML = page.next ? '<button class="btn small" id="seq-more-btn">Load 100 more</button>' : '';
+    $('#seq-more-btn')?.addEventListener('click', () => loadGenomeSequences(acc, page.next, token));
+  } catch (e) {
+    if (token === routeToken) more.innerHTML = errorHtml(e);
+  }
 }
 
 async function renderRelated(db, uid, token) {
