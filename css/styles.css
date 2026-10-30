@@ -16,6 +16,7 @@
   --ok-weak: #e3f6ea;
   --shadow: 0 1px 2px rgb(16 24 40 / 0.05), 0 1px 3px rgb(16 24 40 / 0.06);
   --radius: 10px;
+  --page: 1240px;
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
   color-scheme: light;
@@ -86,7 +87,7 @@ h3 { font-size: 0.95rem; font-weight: 600; }
 .muted { color: var(--muted); }
 .small { font-size: 0.85rem; }
 
-.container { width: 100%; max-width: 1240px; margin: 0 auto; padding: 0 20px; }
+.container { width: 100%; max-width: var(--page); margin: 0 auto; padding: 0 20px; }
 main.container { flex: 1; padding-top: 24px; padding-bottom: 40px; }
 .footer { padding-top: 16px; padding-bottom: 24px; font-size: 0.8rem; border-top: 1px solid var(--border); }
 
@@ -147,7 +148,7 @@ legend { font-size: 0.85rem; font-weight: 500; margin-bottom: 4px; padding: 0; }
   border-bottom: 1px solid var(--border);
 }
 .topbar-inner {
-  max-width: 1240px; margin: 0 auto; padding: 10px 20px;
+  max-width: var(--page); margin: 0 auto; padding: 10px 20px;
   display: flex; align-items: center; gap: 20px;
 }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--text); font-weight: 700; font-size: 1.05rem; }
@@ -308,7 +309,8 @@ a.btn.primary { color: #fff; }
 .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; margin: 0; }
 .stat-grid dt { font-size: 0.75rem; color: var(--muted); }
 .stat-grid dd { margin: 0; font-weight: 600; font-size: 0.92rem; word-break: break-word; }
-th.num, td.num { text-align: right; white-space: nowrap; }
+th.num, td.num { text-align: right; }
+td.num { white-space: nowrap; }
 
 /* --- Modal & toast --- */
 
@@ -331,6 +333,13 @@ dialog::backdrop { background: rgb(10 14 20 / 0.45); }
   font-size: 0.9rem; opacity: 0; pointer-events: none; transition: 0.2s;
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* --- Wide screens --- */
+
+/* A feature table is 5 columns wide and a genome listing 9, next to a sidebar.
+   Capping the page at 1240px made them scroll sideways on a monitor with the
+   room to show them whole, so above that the shell follows the window. */
+@media (min-width: 1360px) { :root { --page: 1600px; } }
 
 /* --- Narrow screens --- */
 
