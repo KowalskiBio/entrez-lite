@@ -40,7 +40,7 @@ It's three files and a stylesheet. Open `index.html` and search.
     </td>
     <td width="33%" valign="top">
       <h3>Get the gene out</h3>
-      A hit is often a 150 kb contig with your gene somewhere inside it. The <b>CDS</b> tab lists every coding sequence in the record and filters as you type, so <code>nirK</code> gives you one FASTA entry.
+      A hit is often a 150 kb contig with your gene somewhere inside it. The <b>CDS</b> tab lists every coding sequence in the record and filters as you type, so <code>nirK</code> gives you one FASTA entry. When a name matches nothing, it searches <b>conserved domains</b> instead.
     </td>
     <td width="33%" valign="top">
       <h3>Exons included</h3>
@@ -68,9 +68,19 @@ It's three files and a stylesheet. Open `index.html` and search.
   <img src="docs/images/cds.png" alt="CDS tab listing all coding sequences of a Pseudomonas fluorescens contig" width="49%" />
 </p>
 
+### When the gene is there but the name isn't
+
+Product names are assigned automatically, and they are wrong often enough to matter. NCBI's pipeline calls most *norB* genes `cbb3-type cytochrome c oxidase subunit I` — a different enzyme — and gives them no `gene=` qualifier. Filter the CDS tab of `NZ_CP027720.1` for `norB` and you get nothing, from 6252 coding sequences, for a gene that is right there.
+
+So when a filter matches nothing, the CDS tab offers to search **conserved domains** instead. These are computed from sequence, not copied from a neighbour, and in that record the protein's domain is `COG3256 — NorB` while its product name still says cbb3 oxidase. NCBI's own data disagrees with itself, and the domain is the half that's right.
+
+Pick a domain from the list and you get the coding sequences whose proteins carry it, with the name the record uses shown next to them. It costs four requests no matter how large the genome: both sides of the comparison go into an Entrez history session and the intersection happens on the server.
+
+Two limits worth knowing. The domain name search is fuzzy — `nirK` surfaces `NnrU` and `NnrS`, which are different genes — so the matches are listed for you to choose from rather than picked for you. And not every protein has a domain assignment: several *nosZ* proteins have none at all, so an empty result is not evidence of absence, and the app says so rather than implying otherwise.
+
 ### Is it really the species it says?
 
-Every contig and assembly record gets a **Genome** card in the sidebar. It finds the assembly the sequence belongs to (`GCF_` if there is a RefSeq copy, `GCA_` otherwise) and shows NCBI's ANI taxonomy check right there. **Genome & ANI** opens the full genome page:
+Every contig and assembly record gets a **Genome** card in the sidebar. It finds the assembly the sequence belongs to (`GCF_` if there is a RefSeq copy, `GCA_` otherwise) and shows NCBI's ANI taxonomy check right there. A type strain is labelled as one: it *defines* its species, so NCBI compares it with the nearest **other** species and the card says so, instead of naming a different organism as if that were a problem. **Genome & ANI** opens the full genome page:
 
 - **ANI** against the best type-strain match and against the type strain of the submitted species, with ANI and coverage for both
 - **CheckM** completeness and contamination
@@ -103,6 +113,7 @@ NCBI allows 3 requests per second without an API key. Paste a free key into **Se
 | You want | Do this |
 |---|---|
 | One gene from a bacterial genome | Open the genome or contig, go to **CDS**, type the gene name, then **Download** |
+| The same gene when the name finds nothing | Stay on **CDS** and use **Search conserved domains instead**, then pick the domain |
 | The same gene from many strains | Search Protein for `nirK[Gene Name] AND "Pseudomonas"[Organism]`, choose **All results** (up to 500) and **FASTA** |
 | A human gene with its introns | Search Gene, open the record, click the genomic location link |
 | Just the mature CDS of that gene | From the same region, go to **Features**, pick the CDS row, click **Sequence** |

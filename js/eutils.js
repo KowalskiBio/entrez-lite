@@ -135,6 +135,56 @@ async function elinkNeighbor(dbfrom, id, linkname) {
   return { dbto: set?.dbto || linkname.split('_')[1], ids: set?.links || [] };
 }
 
+// --- Conserved domains -------------------------------------------------------
+
+// Product names are often wrong. NCBI's own annotation pipeline calls many NorB
+// proteins "cbb3-type cytochrome c oxidase subunit I", so filtering a record's CDS
+// by name misses them entirely. The conserved-domain assignment is computed from
+// sequence rather than copied from a neighbour, and it gets those cases right, so
+// these two calls search a record by domain instead of by annotation text.
+
+async function cddSearch(term, { retmax = 20 } = {}) {
+  const { ids } = await esearch('cdd', term, { retmax });
+  if (!ids.length) return [];
+  const docs = await esummary('cdd', ids);
+  return docs.map((d) => ({
+    uid: String(d.uid),
+    accession: d.accession || '',
+    title: d.title || d.accession || String(d.uid),
+  }));
+}
+
+function historyKey(data, linkname) {
+  const set = data.linksets?.[0] || {};
+  return {
+    webenv: set.webenv || '',
+    key: (set.linksetdbhistories || []).find((h) => h.linkname === linkname)?.querykey || '',
+  };
+}
+
+// The proteins of one nucleotide record that carry one conserved domain. Both sides
+// are put into the same Entrez history session and intersected on the server, so the
+// cost is four requests whatever the genome's size — listing a bacterial proteome and
+// asking for each protein's domains would be hundreds.
+async function proteinsWithDomain(nuccoreUid, cddUid, { limit = 500 } = {}) {
+  const all = historyKey(
+    await eutilsRequest('elink.fcgi', { dbfrom: 'nuccore', db: 'protein', linkname: 'nuccore_protein', id: nuccoreUid, cmd: 'neighbor_history' }),
+    'nuccore_protein');
+  if (!all.webenv || !all.key) return [];
+  const dom = historyKey(
+    await eutilsRequest('elink.fcgi', { dbfrom: 'cdd', db: 'protein', id: cddUid, cmd: 'neighbor_history', WebEnv: all.webenv }),
+    'cdd_protein');
+  if (!dom.key) return [];
+  const data = await eutilsRequest('esearch.fcgi', {
+    db: 'protein', term: `#${all.key} AND #${dom.key}`, WebEnv: all.webenv, usehistory: 'y', retmax: limit,
+  });
+  const ids = data.esearchresult?.idlist || [];
+  if (!ids.length) return [];
+  const docs = await esummary('protein', ids);
+  return docs.map((d) => ({ accession: d.accessionversion || d.caption || '', title: d.title || '' }))
+    .filter((p) => p.accession);
+}
+
 // --- NCBI Datasets v2 --------------------------------------------------------
 
 // Genome reports (assembly stats, CheckM, ANI taxonomy check) come from the Datasets

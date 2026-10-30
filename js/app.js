@@ -812,7 +812,9 @@ async function renderGenomeCard(db, uid, token) {
       <a class="genome-acc" href="#/genome/${encodeURIComponent(acc)}">${esc(acc)}</a>
       <div class="muted small">${esc(r.organism?.organism_name)}${r.organism?.infraspecific_names?.strain ? ` ${esc(r.organism.infraspecific_names.strain)}` : ''} · ${esc(r.assembly_info?.assembly_level)}</div>
       ${aniStatusHtml(ani)}
-      ${best ? `<div class="small">Best type match: <i>${esc(best.organism_name)}</i>, <b>${esc(best.ani)}%</b> ANI</div>` : ''}
+      ${r.type_material ? '<div class="small">Type strain: this genome <b>defines</b> its species name.</div>' : ''}
+      ${best ? `<div class="small">${r.type_material ? 'Nearest other type' : 'Best type match'}: <i>${esc(best.organism_name)}</i>, <b>${esc(best.ani)}%</b> ANI</div>` : ''}
+      ${ani?.comment && ani.comment !== 'na' ? `<div class="small muted">${esc(ani.comment)}</div>` : ''}
       <div class="btn-row">
         <a class="btn small primary" href="#/genome/${encodeURIComponent(acc)}">Genome & ANI</a>
         <a class="btn small" href="${datasetsPageUrl(acc)}" target="_blank" rel="noopener">Datasets ↗</a>
@@ -1305,7 +1307,7 @@ async function renderTab(db, id, doc, tab, region, hasRegion, shownLen, token) {
     }
     if (tab === 'cds') {
       const cdsRegion = hasRegion ? { seq_start: Math.min(region.from, region.to), seq_stop: Math.max(region.from, region.to) } : {};
-      renderCds(body, id, `${safeId}${suffix}`, isStale, cdsRegion, regionKey);
+      renderCds(body, id, `${safeId}${suffix}`, isStale, cdsRegion, regionKey, doc.uid);
     }
   } catch (e) {
     if (!isStale()) body.innerHTML = errorHtml(e);
@@ -1412,8 +1414,12 @@ async function showFeatureSequence(db, id, f) {
   }
 }
 
-async function renderCds(body, id, safeId, isStale, regionParams, regionKey) {
+// "lcl|NZ_CP027720.1_cds_WP_041989327.1_2 [locus_tag=...] [protein_id=WP_041989327.1] ..."
+const cdsProteinId = (header) => header.match(/\[protein_id=([^\]]+)\]/)?.[1] || '';
+
+async function renderCds(body, id, safeId, isStale, regionParams, regionKey, uid) {
   let kind = 'na';
+  let records = [];
   body.innerHTML = `
     <div class="feature-controls">
       <div class="segmented" role="group">
@@ -1423,27 +1429,104 @@ async function renderCds(body, id, safeId, isStale, regionParams, regionKey) {
       <input id="cds-filter" type="search" placeholder="Filter, e.g. nirK or nitrite reductase">
       <span class="muted" id="cds-count"></span>
     </div>
+    <div id="cds-domain"></div>
     <div id="cds-out">${loadingHtml('Fetching coding sequences')}</div>`;
 
+  const outBox = () => $('#cds-out', body);
+  const domBox = () => $('#cds-domain', body);
+  const needleNow = () => $('#cds-filter', body).value.trim();
+
+  const show = (list, suffix) => {
+    const out = outBox();
+    const fasta = list.length ? toFasta(list) : '';
+    const shown = list.length > 300 ? toFasta(list.slice(0, 300)) + `\n… ${list.length - 300} more (included in Download)\n` : fasta;
+    out.innerHTML = list.length
+      ? textPanelHtml(shown, `${safeId}_cds_${kind}${suffix}.fasta`)
+      : '<p class="muted">No coding sequences match.</p>';
+    bindTextPanel(out, fasta);
+  };
+
+  // A name search found nothing. Annotation text is the weakest thing about a record,
+  // so offer the sequence-derived answer instead: domains that match the name, then the
+  // proteins in this record that carry one.
+  const searchDomains = async (needle) => {
+    const box = domBox();
+    box.innerHTML = loadingHtml('Searching conserved domains');
+    try {
+      const domains = await cddSearch(needle);
+      if (isStale()) return;
+      if (!domains.length) {
+        box.innerHTML = `<div class="notice">No conserved domain matches “${esc(needle)}” either.</div>`;
+        return;
+      }
+      box.innerHTML = `
+        <div class="notice">
+          <p>Conserved domains matching “${esc(needle)}”. Pick one to find the proteins in this record that carry it, whatever their product name says.</p>
+          <ul class="link-list compact">
+            ${domains.map((d) => `<li><button class="btn small" data-cdd="${esc(d.uid)}" data-label="${esc(d.accession)} · ${esc(d.title)}">${esc(d.accession)} · ${esc(d.title)}</button></li>`).join('')}
+          </ul>
+        </div>`;
+      $$('[data-cdd]', box).forEach((b) =>
+        b.addEventListener('click', () => runDomain(b.dataset.cdd, b.dataset.label)));
+    } catch (e) {
+      if (!isStale()) box.innerHTML = errorHtml(e);
+    }
+  };
+
+  const runDomain = async (cddUid, label) => {
+    const box = domBox();
+    box.innerHTML = loadingHtml(`Finding proteins with ${label}`);
+    try {
+      const prots = await proteinsWithDomain(uid, cddUid);
+      if (isStale()) return;
+      const want = new Set(prots.map((p) => p.accession));
+      const list = records.filter((r) => want.has(cdsProteinId(r.header)));
+      // No hit here is weak evidence: NCBI has not computed a domain assignment for
+      // every protein, so the gene can be present and still not be found this way.
+      box.innerHTML = prots.length ? `
+        <div class="notice">
+          <b>${esc(label)}</b> — ${fmtN(prots.length)} protein${prots.length === 1 ? '' : 's'} in this record,
+          ${fmtN(list.length)} matched to a coding sequence shown here.
+          ${list.length ? `<div class="small muted">Named in the record as: ${[...new Set(list.map((r) => r.header.match(/\[protein=([^\]]+)\]/)?.[1]).filter(Boolean))].map((p) => `<i>${esc(p)}</i>`).join(', ')}</div>` : ''}
+          <button class="btn small" data-act="back">Other domains</button>
+        </div>` : `
+        <div class="notice">
+          No protein in this record is assigned <b>${esc(label)}</b>. That is not proof the gene is missing:
+          NCBI has not computed domains for every protein, and a gene can be present with no assignment at all.
+          To settle it, BLAST a characterised protein against this record.
+          <button class="btn small" data-act="back">Other domains</button>
+        </div>`;
+      $('[data-act="back"]', box).addEventListener('click', () => searchDomains(needleNow()));
+      $('#cds-count', body).textContent = `${fmtN(list.length)} of ${fmtN(records.length)} CDS`;
+      show(list, `_${label.split(' ')[0].replace(/[^\w.-]/g, '_')}`);
+    } catch (e) {
+      if (!isStale()) box.innerHTML = errorHtml(e);
+    }
+  };
+
   const load = async () => {
-    const out = $('#cds-out', body);
+    const out = outBox();
     out.innerHTML = loadingHtml('Fetching coding sequences');
     try {
       const text = await cachedFetch(`nuccore|${id}|cds_${kind}|${regionKey}`, () => efetch('nuccore', id, `fasta_cds_${kind}`, regionParams));
       if (isStale()) return;
-      const records = parseFasta(text);
+      records = parseFasta(text);
       const draw = () => {
-        const needle = $('#cds-filter', body).value.trim().toLowerCase();
+        const needle = needleNow().toLowerCase();
         const hits = needle ? records.filter((r) => r.header.toLowerCase().includes(needle)) : records;
         $('#cds-count', body).textContent = `${fmtN(hits.length)} of ${fmtN(records.length)} CDS`;
-        const fasta = hits.length ? toFasta(hits) : '';
-        const shown = hits.length > 300 ? toFasta(hits.slice(0, 300)) + `\n… ${hits.length - 300} more (included in Download)\n` : fasta;
-        out.innerHTML = hits.length
-          ? textPanelHtml(shown, `${safeId}_cds_${kind}${needle ? '_' + needle.replace(/[^\w.-]/g, '_') : ''}.fasta`)
-          : '<p class="muted">No coding sequences match.</p>';
-        $('[data-act="copy"]', out)?.addEventListener('click', () => copyText(fasta));
-        const save = $('[data-act="save"]', out);
-        save?.addEventListener('click', () => saveFile(save.dataset.name, fasta));
+        show(hits, needle ? '_' + needle.replace(/[^\w.-]/g, '_') : '');
+        const box = domBox();
+        if (needle && !hits.length && uid) {
+          box.innerHTML = `
+            <div class="notice">
+              Nothing here is <b>named</b> “${esc(needle)}”, which does not mean the gene is absent — product names are assigned automatically and are often wrong.
+              <button class="btn small" id="cds-dom-go">Search conserved domains instead</button>
+            </div>`;
+          $('#cds-dom-go', box).addEventListener('click', () => searchDomains(needleNow()));
+        } else {
+          box.innerHTML = '';
+        }
       };
       $('#cds-filter', body).oninput = draw;
       draw();
