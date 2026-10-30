@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Entrez Lite</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230e7490'/%3E%3Cpath d='M11 7c6 4 6 14 0 18M21 7c-6 4-6 14 0 18M12 12h8M12 20h8' stroke='white' stroke-width='2.4' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#/">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--accent)"/><path d="M11 7c6 4 6 14 0 18M21 7c-6 4-6 14 0 18M12 12h8M12 20h8" stroke="white" stroke-width="2.4" fill="none" stroke-linecap="round"/></svg>
+        <span>Entrez&nbsp;Lite</span>
+      </a>
+      <form id="search" class="searchbar" role="search">
+        <select id="db" aria-label="Database"></select>
+        <input id="q" type="search" placeholder="Search NCBI, e.g. nirK or HQ288918.1" aria-label="Search term" autocomplete="off">
+        <button class="btn primary" type="submit">Search</button>
+      </form>
+      <div class="top-actions">
+        <button class="icon-btn" id="theme-btn" title="Toggle theme" aria-label="Toggle theme">
+          <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z" fill="currentColor"/></svg>
+        </button>
+        <button class="icon-btn" id="settings-btn" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24"><path d="M19.4 13a7.5 7.5 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7 7 0 0 0-1.7 1l-2.4-1-2 3.4L6.6 11a7.5 7.5 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.4zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" fill="currentColor"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="container"></main>
+
+  <footer class="container footer muted">
+    Data from NCBI E-utilities. Not affiliated with NCBI.
+  </footer>
+
+  <dialog id="modal">
+    <div class="modal-head">
+      <h2 id="modal-title"></h2>
+      <button class="icon-btn" id="modal-close" aria-label="Close">✕</button>
+    </div>
+    <div id="modal-body"></div>
+  </dialog>
+  <div id="toast" role="status"></div>
+
+  <script src="js/eutils.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

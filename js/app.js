@@ -1,0 +1,999 @@
+'use strict';
+
+// --- Small helpers ---------------------------------------------------------
+
+const $ = (sel, el = document) => el.querySelector(sel);
+const $$ = (sel, el = document) => [...el.querySelectorAll(sel)];
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
+  (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmtN = (n) => Number(n).toLocaleString('en-US');
+const main = $('#main');
+
+const SEQ_DBS = new Set(['nuccore', 'protein']);
+const BIG_RECORD = 1_000_000;
+
+const DATABASES = [
+  { id: 'nuccore', label: 'Nucleotide' },
+  { id: 'protein', label: 'Protein' },
+  { id: 'gene', label: 'Gene' },
+  { id: 'pubmed', label: 'PubMed' },
+  { id: 'pmc', label: 'PubMed Central' },
+  { id: 'taxonomy', label: 'Taxonomy' },
+  { id: 'assembly', label: 'Assembly' },
+  { id: 'bioproject', label: 'BioProject' },
+  { id: 'biosample', label: 'BioSample' },
+  { id: 'sra', label: 'SRA' },
+  { id: 'structure', label: 'Structure' },
+  { id: 'cdd', label: 'Conserved Domains' },
+  { id: 'ipg', label: 'Identical Protein Groups' },
+  { id: 'gds', label: 'GEO DataSets' },
+  { id: 'clinvar', label: 'ClinVar' },
+  { id: 'mesh', label: 'MeSH' },
+];
+const dbLabel = (id) => DATABASES.find((d) => d.id === id)?.label || id;
+
+const EXAMPLES = [
+  { db: 'nuccore', term: 'nirK', f_org: 'Pseudomonas fluorescens' },
+  { db: 'protein', term: 'copper-containing nitrite reductase', f_org: 'Pseudomonas', f_src: 'refseq' },
+  { db: 'gene', term: 'nirK', f_org: 'Pseudomonas' },
+  { db: 'nuccore', term: '16S ribosomal RNA', f_org: 'Escherichia coli', f_min: '1400', f_max: '1600' },
+  { db: 'pubmed', term: 'denitrification Pseudomonas fluorescens', f_from: '2020' },
+];
+
+// --- Recent activity (per-browser convenience only) ------------------------
+
+const Recent = {
+  load() {
+    try { return JSON.parse(localStorage.getItem('el.recent') || '[]'); } catch { return []; }
+  },
+  add(item) {
+    const key = item.kind === 'search' ? `s|${item.db}|${item.label}` : `r|${item.db}|${item.id}`;
+    const list = this.load().filter((x) => x.key !== key);
+    list.unshift({ ...item, key, at: Date.now() });
+    try { localStorage.setItem('el.recent', JSON.stringify(list.slice(0, 15))); } catch { /* ignore */ }
+  },
+  clear() {
+    try { localStorage.removeItem('el.recent'); } catch { /* ignore */ }
+  },
+};
+
+// --- Filters ---------------------------------------------------------------
+
+// Each filter maps a form field to an Entrez query clause, mirroring NCBI's sidebar.
+const FILTERS = {
+  nuccore: ['org', 'gene', 'mol', 'src', 'len'],
+  protein: ['org', 'gene', 'src', 'len'],
+  gene: ['org', 'alive'],
+  pubmed: ['date', 'free'],
+  pmc: ['date'],
+  default: ['org'],
+};
+const filterKeys = (db) => FILTERS[db] || FILTERS.default;
+
+function readFilters(params) {
+  const f = {};
+  for (const [k, v] of params) if (k.startsWith('f_') && v) f[k.slice(2)] = v;
+  return f;
+}
+
+function buildTerm(db, term, f) {
+  const keys = filterKeys(db);
+  const clauses = [];
+  const has = (k) => keys.includes(k);
+  if (has('org') && f.org) clauses.push(`"${f.org}"[Organism]`);
+  if (has('gene') && f.gene) clauses.push(`${f.gene}[Gene Name]`);
+  if (has('mol') && f.mol) clauses.push(`biomol_${f.mol}[PROP]`);
+  if (has('src') && f.src) clauses.push(`${f.src}[filter]`);
+  if (has('len') && (f.min || f.max)) clauses.push(`${f.min || 1}:${f.max || 999999999}[SLEN]`);
+  if (has('alive') && f.alive) clauses.push('alive[prop]');
+  if (has('date') && (f.from || f.to)) clauses.push(`${f.from || 1800}:${f.to || 3000}[dp]`);
+  if (has('free') && f.free) clauses.push('free full text[sb]');
+  if (!term) return clauses.join(' AND ');
+  return clauses.length ? [`(${term})`, ...clauses].join(' AND ') : term;
+}
+
+function filtersFormHtml(db, f) {
+  const keys = filterKeys(db);
+  const field = (k, html) => (keys.includes(k) ? html : '');
+  const opt = (val, label, cur) => `<option value="${val}"${cur === val ? ' selected' : ''}>${label}</option>`;
+  return `
+    <form class="filters" id="filters">
+      <h3>Filters</h3>
+      ${field('org', `<label>Organism<input name="org" value="${esc(f.org)}" placeholder="e.g. Pseudomonas fluorescens"></label>`)}
+      ${field('gene', `<label>Gene name<input name="gene" value="${esc(f.gene)}" placeholder="e.g. nirK"></label>`)}
+      ${field('mol', `<label>Molecule type<select name="mol">
+        ${opt('', 'All', f.mol || '')}${opt('genomic', 'Genomic DNA/RNA', f.mol)}${opt('mrna', 'mRNA', f.mol)}${opt('rrna', 'rRNA', f.mol)}
+      </select></label>`)}
+      ${field('src', `<label>Source database<select name="src">
+        ${opt('', 'All', f.src || '')}${opt('refseq', 'RefSeq', f.src)}${opt('insdc', 'GenBank / INSDC', f.src)}
+      </select></label>`)}
+      ${field('len', `<fieldset><legend>Sequence length</legend><div class="row2">
+        <input name="min" type="number" min="1" value="${esc(f.min)}" placeholder="min">
+        <input name="max" type="number" min="1" value="${esc(f.max)}" placeholder="max">
+      </div></fieldset>`)}
+      ${field('alive', `<label class="check"><input type="checkbox" name="alive" value="1"${f.alive ? ' checked' : ''}> Current records only</label>`)}
+      ${field('date', `<fieldset><legend>Publication year</legend><div class="row2">
+        <input name="from" type="number" value="${esc(f.from)}" placeholder="from">
+        <input name="to" type="number" value="${esc(f.to)}" placeholder="to">
+      </div></fieldset>`)}
+      ${field('free', `<label class="check"><input type="checkbox" name="free" value="1"${f.free ? ' checked' : ''}> Free full text</label>`)}
+      <div class="filters-actions">
+        <button class="btn primary" type="submit">Apply</button>
+        <button class="btn ghost" type="button" id="clear-filters">Clear</button>
+      </div>
+    </form>`;
+}
+
+// --- Summary rendering per database ---------------------------------------
+
+function summarize(db, d) {
+  const uid = d.uid;
+  if (SEQ_DBS.has(db)) {
+    const acc = d.accessionversion || d.caption || uid;
+    const unit = db === 'protein' ? 'aa' : 'bp';
+    return {
+      id: acc,
+      title: d.title,
+      meta: [
+        acc,
+        d.slen ? `${fmtN(d.slen)} ${unit}` : '',
+        db === 'nuccore' ? [d.biomol, d.moltype?.toUpperCase(), d.topology === 'circular' ? 'circular' : ''].filter(Boolean).join(' ') : '',
+        d.organism,
+        d.updatedate ? `updated ${d.updatedate}` : '',
+      ],
+      badges: [d.sourcedb === 'refseq' ? 'RefSeq' : '', d.genome && d.genome !== 'genomic' ? d.genome : ''],
+    };
+  }
+  switch (db) {
+    case 'gene':
+      return {
+        id: uid,
+        title: `${d.name}${d.description ? ': ' + d.description : ''}`,
+        meta: [
+          `Gene ID ${uid}`,
+          d.organism?.scientificname,
+          d.chromosome ? `chr ${d.chromosome}` : '',
+          d.maplocation,
+          d.otheraliases ? `aka ${d.otheraliases}` : '',
+        ],
+        snippet: d.summary,
+        badges: [d.status && d.status !== '0' && d.currentid ? 'replaced' : ''],
+      };
+    case 'pubmed':
+    case 'pmc': {
+      const authors = (d.authors || []).map((a) => a.name);
+      const doi = (d.articleids || []).find((a) => a.idtype === 'doi')?.value;
+      return {
+        id: uid,
+        title: d.title,
+        meta: [
+          authors.slice(0, 3).join(', ') + (authors.length > 3 ? ' et al.' : ''),
+          d.fulljournalname || d.source,
+          d.pubdate,
+          db === 'pubmed' ? `PMID ${uid}` : `PMC${uid}`,
+          doi ? `doi:${doi}` : '',
+        ],
+      };
+    }
+    case 'taxonomy':
+      return {
+        id: uid,
+        title: d.scientificname,
+        meta: [d.commonname, d.rank, d.division, `TaxID ${uid}`],
+      };
+    case 'assembly':
+      return {
+        id: uid,
+        title: `${d.assemblyname || ''} · ${d.speciesname || d.organism || ''}`,
+        meta: [d.assemblyaccession, d.assemblystatus, d.submitterorganization, d.coverage ? `${d.coverage}× coverage` : ''],
+      };
+    case 'bioproject':
+      return { id: uid, title: d.project_title, meta: [d.project_acc, d.organism_name, d.project_data_type] };
+    case 'biosample':
+      return { id: uid, title: d.title, meta: [d.accession, d.organism, d.date] };
+    case 'structure':
+      return { id: uid, title: d.pdbdescr, meta: [d.pdbacc, d.expmethod, d.pdbdepositdate] };
+    default:
+      return {
+        id: uid,
+        title: d.title || d.name || d.description || d.scientificname || d.caption || d.accession || `UID ${uid}`,
+        meta: [d.accession || d.caption, d.organism?.scientificname || d.organism || d.taxname, `UID ${uid}`],
+      };
+  }
+}
+
+function resultItemHtml(db, d, { selectable = true } = {}) {
+  const s = summarize(db, d);
+  const meta = s.meta.filter(Boolean).map((m) => `<span>${esc(m)}</span>`).join('');
+  const badges = (s.badges || []).filter(Boolean).map((b) => `<span class="badge">${esc(b)}</span>`).join('');
+  return `
+    <li class="result">
+      ${selectable ? `<input type="checkbox" class="sel" value="${esc(d.uid)}" aria-label="Select">` : ''}
+      <div>
+        <a class="result-title" href="#/record/${db}/${encodeURIComponent(s.id)}">${esc(s.title)}</a>${badges}
+        <div class="meta">${meta}</div>
+        ${s.snippet ? `<p class="snippet">${esc(s.snippet.slice(0, 260))}${s.snippet.length > 260 ? '…' : ''}</p>` : ''}
+      </div>
+    </li>`;
+}
+
+function paginationHtml(page, pages) {
+  if (pages <= 1) return '';
+  return `
+    <nav class="pager">
+      <button class="btn small" data-page="${page - 1}" ${page <= 1 ? 'disabled' : ''}>‹ Prev</button>
+      <span>Page <input type="number" class="page-input" min="1" max="${pages}" value="${page}"> of ${fmtN(pages)}</span>
+      <button class="btn small" data-page="${page + 1}" ${page >= pages ? 'disabled' : ''}>Next ›</button>
+    </nav>`;
+}
+
+function errorHtml(e) {
+  return `<div class="notice error"><strong>Something went wrong.</strong> ${esc(e.message || e)}</div>`;
+}
+
+const loadingHtml = (what = 'Loading') => `<div class="loading"><span class="spinner"></span>${esc(what)}…</div>`;
+
+// --- Routing ---------------------------------------------------------------
+
+let routeToken = 0;
+const summaryCache = new Map();
+const textCache = new Map();
+
+function parseHash() {
+  const h = location.hash.slice(1) || '/';
+  const [path, qs = ''] = h.split('?');
+  return {
+    parts: path.split('/').filter(Boolean).map(decodeURIComponent),
+    params: new URLSearchParams(qs),
+  };
+}
+
+function hashFor(path, params = {}) {
+  const qs = new URLSearchParams(
+    Object.entries(params).filter(([, v]) => v !== '' && v !== null && v !== undefined && v !== false),
+  ).toString();
+  return '#' + path + (qs ? '?' + qs : '');
+}
+
+const go = (path, params) => { location.hash = hashFor(path, params); };
+
+function route() {
+  const { parts, params } = parseHash();
+  const token = ++routeToken;
+  syncHeader(parts, params);
+  window.scrollTo(0, 0);
+  if (parts[0] === 'search') return renderSearch(params, token);
+  if (parts[0] === 'record' && parts[1] && parts[2]) return renderRecord(parts[1], parts[2], params, token);
+  if (parts[0] === 'links' && parts[3]) return renderLinks(parts[1], parts[2], parts[3], params, token);
+  return renderHome();
+}
+
+function syncHeader(parts, params) {
+  const db = parts[0] === 'search' ? params.get('db') : parts[0] === 'record' ? parts[1] : null;
+  if (db) $('#db').value = db;
+  $('#q').value = parts[0] === 'search' ? params.get('term') || '' : '';
+}
+
+// --- Home ------------------------------------------------------------------
+
+function renderHome() {
+  const recent = Recent.load();
+  const exampleLink = (ex) => {
+    const params = { db: ex.db, term: ex.term };
+    for (const [k, v] of Object.entries(ex)) if (k.startsWith('f_')) params[k] = v;
+    const extra = Object.entries(ex).filter(([k]) => k.startsWith('f_')).map(([, v]) => v).join(', ');
+    return `<li><a href="${hashFor('/search', params)}"><span class="db-chip">${esc(dbLabel(ex.db))}</span>${esc(ex.term)}${extra ? ` <span class="muted">· ${esc(extra)}</span>` : ''}</a></li>`;
+  };
+  const recentLink = (r) => r.kind === 'search'
+    ? `<li><a href="${hashFor('/search', r.params)}"><span class="db-chip">${esc(dbLabel(r.db))}</span>${esc(r.label)} <span class="muted">(${fmtN(r.count)})</span></a></li>`
+    : `<li><a href="#/record/${r.db}/${encodeURIComponent(r.id)}"><span class="db-chip">${esc(dbLabel(r.db))}</span>${esc(r.label)}</a></li>`;
+
+  main.innerHTML = `
+    <section class="home">
+      <div class="hero">
+        <h1>Search NCBI, straight from the API</h1>
+        <p class="muted">Every search and record here comes from NCBI's E-utilities, so it keeps working when the NCBI website pages misbehave.</p>
+      </div>
+      <div class="home-grid">
+        <div class="card">
+          <h3>Try an example</h3>
+          <ul class="link-list">${EXAMPLES.map(exampleLink).join('')}</ul>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Recent activity</h3>${recent.length ? '<button class="btn ghost small" id="clear-recent">Clear</button>' : ''}</div>
+          ${recent.length ? `<ul class="link-list">${recent.map(recentLink).join('')}</ul>` : '<p class="muted">Your searches and opened records will show up here.</p>'}
+        </div>
+        <div class="card">
+          <h3>Search tips</h3>
+          <ul class="tips">
+            <li>Use fields like NCBI does: <code>nirK[Gene Name]</code>, <code>"Pseudomonas fluorescens"[Organism]</code>, <code>300:2000[SLEN]</code>.</li>
+            <li>Paste an accession (e.g. <code>HQ288918.1</code>) to jump to the record.</li>
+            <li>On a genome or contig, open the <b>Features</b> or <b>CDS</b> tab to pull out a single gene.</li>
+            <li>Add a free NCBI API key in Settings for faster requests.</li>
+          </ul>
+        </div>
+      </div>
+    </section>`;
+  $('#clear-recent')?.addEventListener('click', () => { Recent.clear(); renderHome(); });
+}
+
+// --- Search ----------------------------------------------------------------
+
+const ACCESSION_RE = /^([A-Z]{1,2}_?[A-Z0-9]*\d{5,}(\.\d+)?|[A-Z]{1,4}\d{5,8}(\.\d+)?)$/;
+
+async function renderSearch(params, token) {
+  const db = params.get('db') || 'nuccore';
+  const term = (params.get('term') || '').trim();
+  const size = [20, 50, 100].includes(Number(params.get('size'))) ? Number(params.get('size')) : 20;
+  const page = Math.max(1, Number(params.get('page')) || 1);
+  const f = readFilters(params);
+  const fullTerm = buildTerm(db, term, f);
+
+  main.innerHTML = `
+    <div class="search-layout">
+      <aside>${filtersFormHtml(db, f)}</aside>
+      <section id="results">${fullTerm ? loadingHtml('Searching ' + dbLabel(db)) : '<p class="muted">Type a search term above.</p>'}</section>
+    </div>`;
+
+  const baseParams = () => {
+    const p = { db, term, size: size === 20 ? '' : size };
+    for (const [k, v] of Object.entries(f)) p['f_' + k] = v;
+    return p;
+  };
+
+  $('#filters').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const p = { db, term, size: size === 20 ? '' : size };
+    for (const [k, v] of fd) if (String(v).trim()) p['f_' + k] = String(v).trim();
+    go('/search', p);
+  });
+  $('#clear-filters').addEventListener('click', () => go('/search', { db, term }));
+
+  if (!fullTerm) return;
+
+  // A bare accession goes straight to its record, like on NCBI.
+  if (SEQ_DBS.has(db) && ACCESSION_RE.test(term) && !Object.keys(f).length && page === 1) {
+    try {
+      const [doc] = await esummary(db, [term]);
+      if (token !== routeToken) return;
+      if (doc) {
+        summaryCache.set(`${db}|${term}`, doc);
+        history.replaceState(null, '', `#/record/${db}/${encodeURIComponent(term)}`);
+        return renderRecord(db, term, new URLSearchParams(), token);
+      }
+    } catch { /* not an accession after all: fall through to a normal search */ }
+  }
+
+  const results = $('#results');
+  try {
+    const r = await esearch(db, fullTerm, { retstart: (page - 1) * size, retmax: size });
+    if (token !== routeToken) return;
+    const docs = await esummary(db, r.ids);
+    if (token !== routeToken) return;
+
+    Recent.add({ kind: 'search', db, label: [term, ...Object.values(f)].filter(Boolean).join(' · '), count: r.count, params: { ...baseParams() } });
+
+    const pages = Math.min(Math.ceil(r.count / size), Math.floor(9999 / size) + 1);
+    const from = r.count ? (page - 1) * size + 1 : 0;
+    const to = Math.min(page * size, r.count);
+    results.innerHTML = `
+      <div class="results-head">
+        <div><h2>${fmtN(r.count)} result${r.count === 1 ? '' : 's'}</h2><span class="muted">in ${esc(dbLabel(db))}${r.count ? ` · showing ${fmtN(from)}–${fmtN(to)}` : ''}</span></div>
+        <label class="inline">Per page <select id="size">${[20, 50, 100].map((n) => `<option${n === size ? ' selected' : ''}>${n}</option>`).join('')}</select></label>
+      </div>
+      ${r.notFound.length ? `<div class="notice">Not found or ignored: <b>${esc(r.notFound.join(', '))}</b></div>` : ''}
+      <details class="details">
+        <summary>Search details</summary>
+        <dl><dt>Query sent</dt><dd><code>${esc(fullTerm)}</code></dd>
+        <dt>NCBI translation</dt><dd><code>${esc(r.translation || 'none')}</code></dd></dl>
+      </details>
+      ${r.count ? `
+        <div class="toolbar">
+          <label class="check"><input type="checkbox" id="sel-all"> Select page</label>
+          <span class="muted" id="sel-count"></span>
+          <div class="spacer"></div>
+          ${downloadControlsHtml(db, r.count)}
+        </div>
+        <ol class="results">${docs.map((d) => resultItemHtml(db, d)).join('')}</ol>
+        ${paginationHtml(page, pages)}` : '<p class="muted">No records match. Try fewer words, or check the search details above.</p>'}`;
+
+    $('#size')?.addEventListener('change', (e) => go('/search', { ...baseParams(), size: e.target.value }));
+    bindPager(results, (p) => go('/search', { ...baseParams(), page: p }), pages);
+    bindSelection(results);
+    bindDownload(results, db, docs, async () => {
+      const all = await esearch(db, fullTerm, { retmax: 500 });
+      return all.ids;
+    });
+  } catch (e) {
+    if (token === routeToken) results.innerHTML = errorHtml(e);
+  }
+}
+
+function bindPager(root, onPage, pages) {
+  $$('.pager button', root).forEach((b) => b.addEventListener('click', () => onPage(Number(b.dataset.page))));
+  $$('.page-input', root).forEach((i) => i.addEventListener('change', () => {
+    onPage(Math.min(pages, Math.max(1, Number(i.value) || 1)));
+  }));
+}
+
+function bindSelection(root) {
+  const update = () => {
+    const n = $$('.sel:checked', root).length;
+    $('#sel-count', root).textContent = n ? `${n} selected` : '';
+  };
+  $('#sel-all', root)?.addEventListener('change', (e) => {
+    $$('.sel', root).forEach((c) => { c.checked = e.target.checked; });
+    update();
+  });
+  $$('.sel', root).forEach((c) => c.addEventListener('change', update));
+}
+
+// --- Downloads ("Send to: File") -------------------------------------------
+
+function downloadFormats(db) {
+  if (SEQ_DBS.has(db)) {
+    return [['fasta', 'FASTA'], ['gb', db === 'protein' ? 'GenPept' : 'GenBank'], ['acc', 'Accession list'], ['csv', 'Summary (CSV)']];
+  }
+  if (db === 'pubmed') return [['abstract', 'Abstracts (text)'], ['medline', 'MEDLINE'], ['csv', 'Summary (CSV)'], ['ids', 'PMID list']];
+  return [['csv', 'Summary (CSV)'], ['ids', 'ID list']];
+}
+
+function downloadControlsHtml(db, count) {
+  return `
+    <div class="download">
+      <select id="dl-scope">
+        <option value="selected">Selected</option>
+        <option value="page">This page</option>
+        ${count <= 500 ? `<option value="all">All ${fmtN(count)} results</option>` : ''}
+      </select>
+      <select id="dl-format">${downloadFormats(db).map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
+      <button class="btn" id="dl-go">Download</button>
+    </div>`;
+}
+
+function bindDownload(root, db, pageDocs, getAllIds) {
+  const btn = $('#dl-go', root);
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const scope = $('#dl-scope', root).value;
+    const format = $('#dl-format', root).value;
+    let ids = scope === 'selected' ? $$('.sel:checked', root).map((c) => c.value) : pageDocs.map((d) => d.uid);
+    if (scope === 'selected' && !ids.length) return toast('Select some records first, or choose "This page".');
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = 'Preparing…';
+    try {
+      if (scope === 'all') ids = await getAllIds();
+      await downloadRecords(db, ids, format);
+    } catch (e) {
+      toast(e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  });
+}
+
+async function downloadRecords(db, ids, format) {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const base = `${db}_${ids.length}_${stamp}`;
+  if (format === 'fasta') return saveFile(`${base}.fasta`, await efetch(db, ids, 'fasta'));
+  if (format === 'gb') return saveFile(`${base}.${db === 'protein' ? 'gp' : 'gb'}`, await efetch(db, ids, db === 'protein' ? 'gp' : 'gb'));
+  if (format === 'abstract') return saveFile(`${base}_abstracts.txt`, await efetch(db, ids, 'abstract'));
+  if (format === 'medline') return saveFile(`${base}.medline.txt`, await efetch(db, ids, 'medline'));
+
+  const docs = [];
+  for (let i = 0; i < ids.length; i += 200) docs.push(...(await esummary(db, ids.slice(i, i + 200))));
+  if (format === 'acc') return saveFile(`${base}_accessions.txt`, docs.map((d) => summarize(db, d).id).join('\n') + '\n');
+  if (format === 'ids') return saveFile(`${base}_ids.txt`, docs.map((d) => d.uid).join('\n') + '\n');
+
+  const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const rows = SEQ_DBS.has(db)
+    ? [['accession', 'title', 'organism', 'length', 'molecule', 'updated'],
+      ...docs.map((d) => [d.accessionversion || d.caption, d.title, d.organism, d.slen, d.biomol || d.moltype, d.updatedate])]
+    : [['uid', 'title', 'details'], ...docs.map((d) => { const s = summarize(db, d); return [d.uid, s.title, s.meta.filter(Boolean).join('; ')]; })];
+  return saveFile(`${base}.csv`, rows.map((r) => r.map(cell).join(',')).join('\n') + '\n');
+}
+
+function saveFile(name, text, type = 'text/plain') {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = Object.assign(document.createElement('textarea'), { value: text });
+    document.body.append(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+  toast('Copied to clipboard');
+}
+
+function toast(msg) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+// --- Linked records ----------------------------------------------------------
+
+async function renderLinks(dbfrom, id, linkname, params, token) {
+  const page = Math.max(1, Number(params.get('page')) || 1);
+  const size = 20;
+  main.innerHTML = `<section id="results">${loadingHtml('Finding linked records')}</section>`;
+  const results = $('#results');
+  try {
+    const { dbto, ids } = await elinkNeighbor(dbfrom, id, linkname);
+    if (token !== routeToken) return;
+    const pageIds = ids.slice((page - 1) * size, page * size);
+    const docs = await esummary(dbto, pageIds);
+    if (token !== routeToken) return;
+    const pages = Math.ceil(ids.length / size);
+    results.innerHTML = `
+      <a class="back" href="#/record/${dbfrom}/${encodeURIComponent(id)}">‹ Back to record</a>
+      <div class="results-head">
+        <div><h2>${fmtN(ids.length)} linked record${ids.length === 1 ? '' : 's'}</h2>
+        <span class="muted">${esc(dbLabel(dbto))} · via <code>${esc(linkname)}</code> from ${esc(dbLabel(dbfrom))} ${esc(id)}</span></div>
+      </div>
+      ${ids.length ? `
+        <div class="toolbar">
+          <label class="check"><input type="checkbox" id="sel-all"> Select page</label>
+          <span class="muted" id="sel-count"></span>
+          <div class="spacer"></div>
+          ${downloadControlsHtml(dbto, ids.length)}
+        </div>
+        <ol class="results">${docs.map((d) => resultItemHtml(dbto, d)).join('')}</ol>
+        ${paginationHtml(page, pages)}` : '<p class="muted">No linked records.</p>'}`;
+    bindPager(results, (p) => go(`/links/${dbfrom}/${encodeURIComponent(id)}/${linkname}`, { page: p }), pages);
+    bindSelection(results);
+    bindDownload(results, dbto, docs, async () => ids.slice(0, 500));
+  } catch (e) {
+    if (token === routeToken) results.innerHTML = errorHtml(e);
+  }
+}
+
+// --- Record ------------------------------------------------------------------
+
+async function getSummary(db, id) {
+  const key = `${db}|${id}`;
+  if (!summaryCache.has(key)) {
+    const [doc] = await esummary(db, [id]);
+    if (!doc) throw new Error(`No ${dbLabel(db)} record found for "${id}".`);
+    summaryCache.set(key, doc);
+  }
+  return summaryCache.get(key);
+}
+
+async function cachedFetch(key, fn) {
+  if (!textCache.has(key)) {
+    const p = fn();
+    textCache.set(key, p);
+    p.catch(() => textCache.delete(key));
+  }
+  return textCache.get(key);
+}
+
+async function renderRecord(db, id, params, token) {
+  main.innerHTML = loadingHtml('Loading record');
+  let doc;
+  try {
+    doc = await getSummary(db, id);
+  } catch (e) {
+    if (token === routeToken) main.innerHTML = errorHtml(e);
+    return;
+  }
+  if (token !== routeToken) return;
+  const s = summarize(db, doc);
+  Recent.add({ kind: 'record', db, id, label: s.title });
+
+  const isSeq = SEQ_DBS.has(db);
+  const region = {
+    from: Number(params.get('from')) || '',
+    to: Number(params.get('to')) || '',
+    strand: params.get('strand') === '2' ? '2' : '1',
+  };
+  const hasRegion = isSeq && region.from && region.to;
+  const shownLen = hasRegion ? Math.abs(region.to - region.from) + 1 : Number(doc.slen || 0);
+
+  const tabs = isSeq
+    ? [['genbank', db === 'protein' ? 'GenPept' : 'GenBank'], ['fasta', 'FASTA'], ['features', 'Features'], ...(db === 'nuccore' ? [['cds', 'CDS']] : [])]
+    : [['summary', 'Summary'], ...(db === 'pubmed' ? [['abstract', 'Abstract']] : [])];
+  const defaultTab = isSeq ? (shownLen > BIG_RECORD ? 'features' : 'genbank') : 'summary';
+  let tab = tabs.some(([t]) => t === params.get('tab')) ? params.get('tab') : defaultTab;
+
+  const ncbiUrl = `https://www.ncbi.nlm.nih.gov/${db}/${encodeURIComponent(s.id)}`;
+  const blastProgram = db === 'protein' ? 'blastp' : 'blastn';
+
+  main.innerHTML = `
+    <article class="record">
+      <header class="record-head">
+        <span class="db-chip">${esc(dbLabel(db))}</span>
+        <h1>${esc(s.title)}</h1>
+        <div class="meta">${s.meta.filter(Boolean).map((m) => `<span>${esc(m)}</span>`).join('')}</div>
+        ${hasRegion ? `<div class="notice">Showing region <b>${fmtN(region.from)}–${fmtN(region.to)}</b> (${region.strand === '2' ? 'minus' : 'plus'} strand), ${fmtN(shownLen)} bp. <a href="#/record/${db}/${encodeURIComponent(id)}">Show whole record</a></div>` : ''}
+      </header>
+      <div class="record-layout">
+        <div class="record-main">
+          <nav class="tabs" role="tablist">${tabs.map(([t, l]) => `<button role="tab" data-tab="${t}" aria-selected="${t === tab}">${l}</button>`).join('')}</nav>
+          <div id="tab-body"></div>
+        </div>
+        <aside class="record-side">
+          ${db === 'nuccore' ? `
+            <form class="card" id="region">
+              <h3>Change region shown</h3>
+              <div class="row2">
+                <input name="from" type="number" min="1" placeholder="from" value="${region.from}">
+                <input name="to" type="number" min="1" placeholder="to" value="${region.to}">
+              </div>
+              <label>Strand<select name="strand"><option value="1">Plus</option><option value="2"${region.strand === '2' ? ' selected' : ''}>Minus (reverse complement)</option></select></label>
+              <button class="btn small" type="submit">Update view</button>
+            </form>` : ''}
+          <div class="card">
+            <h3>Analyze</h3>
+            <ul class="link-list compact">
+              ${isSeq ? `<li><a href="https://blast.ncbi.nlm.nih.gov/Blast.cgi?PROGRAM=${blastProgram}&PAGE_TYPE=BlastSearch&QUERY=${encodeURIComponent(s.id)}" target="_blank" rel="noopener">Run BLAST ↗</a></li>` : ''}
+              <li><a href="${ncbiUrl}" target="_blank" rel="noopener">Open on NCBI ↗</a></li>
+            </ul>
+          </div>
+          <div class="card" id="related"><h3>Related information</h3>${loadingHtml('Checking links')}</div>
+        </aside>
+      </div>
+    </article>`;
+
+  $('#region')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    go(`/record/${db}/${encodeURIComponent(id)}`, { from: fd.get('from'), to: fd.get('to'), strand: fd.get('strand') === '2' ? 2 : '', tab });
+  });
+
+  const showTab = (t) => {
+    tab = t;
+    $$('.tabs button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === t)));
+    const p = new URLSearchParams(location.hash.split('?')[1] || '');
+    p.set('tab', t);
+    history.replaceState(null, '', `#/record/${db}/${encodeURIComponent(id)}?${p}`);
+    renderTab(db, id, doc, t, region, hasRegion, shownLen, token);
+  };
+  $$('.tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
+  renderTab(db, id, doc, tab, region, hasRegion, shownLen, token);
+  renderRelated(db, doc.uid, token);
+}
+
+async function renderRelated(db, uid, token) {
+  try {
+    const links = (await elinkCheck(db, uid)).filter((l) => l.dbto && l.linkname);
+    if (token !== routeToken) return;
+    const box = $('#related');
+    if (!links.length) { box.innerHTML = '<h3>Related information</h3><p class="muted">No linked records.</p>'; return; }
+    const item = (l) => {
+      const target = dbLabel(l.dbto);
+      const note = target.toLowerCase() === l.label.toLowerCase() ? '' : ` <span class="muted">${esc(target)}</span>`;
+      return `<li><a href="#/links/${db}/${uid}/${l.linkname}">${esc(l.label)}</a>${note}</li>`;
+    };
+    box.innerHTML = `<h3>Related information</h3>
+      <ul class="link-list compact">${links.slice(0, 10).map(item).join('')}</ul>
+      ${links.length > 10 ? `<details><summary>${links.length - 10} more</summary><ul class="link-list compact">${links.slice(10).map(item).join('')}</ul></details>` : ''}`;
+  } catch {
+    if (token === routeToken) $('#related').innerHTML = '<h3>Related information</h3><p class="muted">Could not load links.</p>';
+  }
+}
+
+function textPanelHtml(text, filename) {
+  return `
+    <div class="panel-actions">
+      <button class="btn small" data-act="copy">Copy</button>
+      <button class="btn small" data-act="save" data-name="${esc(filename)}">Download</button>
+    </div>
+    <pre class="seq">${esc(text)}</pre>`;
+}
+
+function bindTextPanel(root, text) {
+  $('[data-act="copy"]', root)?.addEventListener('click', () => copyText(text));
+  const save = $('[data-act="save"]', root);
+  save?.addEventListener('click', () => saveFile(save.dataset.name, text));
+}
+
+function seqStats(seq, isProtein) {
+  if (isProtein || !seq.length) return `${fmtN(seq.length)} ${isProtein ? 'aa' : 'bp'}`;
+  const gc = (seq.match(/[GCgcSs]/g) || []).length;
+  return `${fmtN(seq.length)} bp · GC ${(100 * gc / seq.length).toFixed(1)}%`;
+}
+
+async function renderTab(db, id, doc, tab, region, hasRegion, shownLen, token) {
+  const body = $('#tab-body');
+  const isStale = () => token !== routeToken || !body.isConnected;
+  const regionParams = hasRegion ? { seq_start: region.from, seq_stop: region.to, strand: region.strand } : {};
+  const regionKey = hasRegion ? `${region.from}-${region.to}-${region.strand}` : 'all';
+  const safeId = id.replace(/[^\w.-]/g, '_');
+  const suffix = hasRegion ? `_${region.from}-${region.to}${region.strand === '2' ? 'c' : ''}` : '';
+
+  const sizeLimit = tab === 'genbank' || tab === 'fasta' ? BIG_RECORD
+    : tab === 'features' || tab === 'cds' ? 20 * BIG_RECORD : Infinity;
+  if (shownLen > sizeLimit && !body.dataset.force) {
+    body.innerHTML = `
+      <div class="notice">This ${hasRegion ? 'region' : 'record'} is <b>${fmtN(shownLen)} bp</b>. Loading it whole is slow and heavy.
+      ${sizeLimit === BIG_RECORD ? 'To get one gene, use the <b>Features</b> or <b>CDS</b> tab, or set a region on the right.' : 'Set a region on the right to narrow it down.'}</div>
+      <button class="btn" id="force-load">Load anyway</button>`;
+    $('#force-load').addEventListener('click', () => {
+      body.dataset.force = '1';
+      renderTab(db, id, doc, tab, region, hasRegion, shownLen, token);
+    });
+    return;
+  }
+  body.innerHTML = loadingHtml('Fetching from NCBI');
+
+  try {
+    if (tab === 'summary') {
+      body.innerHTML = summaryTabHtml(db, doc);
+      return;
+    }
+    if (tab === 'abstract') {
+      const text = await cachedFetch(`${db}|${id}|abstract`, () => efetch(db, id, 'abstract'));
+      if (isStale()) return;
+      body.innerHTML = `<pre class="prose">${esc(text.trim())}</pre>`;
+      return;
+    }
+    if (tab === 'genbank') {
+      const rettype = db === 'protein' ? 'gp' : 'gbwithparts';
+      const text = await cachedFetch(`${db}|${id}|gb|${regionKey}`, () => efetch(db, id, rettype, regionParams));
+      if (isStale()) return;
+      body.innerHTML = textPanelHtml(text, `${safeId}${suffix}.${db === 'protein' ? 'gp' : 'gb'}`);
+      bindTextPanel(body, text);
+      return;
+    }
+    if (tab === 'fasta') {
+      const text = await cachedFetch(`${db}|${id}|fasta|${regionKey}`, () => efetch(db, id, 'fasta', regionParams));
+      if (isStale()) return;
+      const [rec] = parseFasta(text);
+      body.innerHTML = `<p class="muted stats">${rec ? seqStats(rec.seq, db === 'protein') : ''}</p>` + textPanelHtml(text, `${safeId}${suffix}.fasta`);
+      bindTextPanel(body, text);
+      return;
+    }
+    if (tab === 'features') {
+      const ftRegion = hasRegion ? { seq_start: Math.min(region.from, region.to), seq_stop: Math.max(region.from, region.to) } : {};
+      const text = await cachedFetch(`${db}|${id}|ft|${regionKey}`, () => efetch(db, id, 'ft', ftRegion));
+      if (isStale()) return;
+      const offset = hasRegion ? ftRegion.seq_start - 1 : 0;
+      renderFeatures(body, db, id, parseFeatureTable(text, offset));
+      return;
+    }
+    if (tab === 'cds') {
+      const cdsRegion = hasRegion ? { seq_start: Math.min(region.from, region.to), seq_stop: Math.max(region.from, region.to) } : {};
+      renderCds(body, id, `${safeId}${suffix}`, isStale, cdsRegion, regionKey);
+    }
+  } catch (e) {
+    if (!isStale()) body.innerHTML = errorHtml(e);
+  }
+}
+
+function summaryTabHtml(db, doc) {
+  let extra = '';
+  if (db === 'gene') {
+    const locs = (doc.genomicinfo || []).filter((g) => g.chraccver);
+    extra = `
+      ${doc.summary ? `<p class="prose">${esc(doc.summary)}</p>` : ''}
+      ${locs.length ? `<h3>Genomic location</h3><ul class="link-list">${locs.map((g) => {
+        const minus = g.chrstart > g.chrstop;
+        const from = Math.min(g.chrstart, g.chrstop) + 1;
+        const to = Math.max(g.chrstart, g.chrstop) + 1;
+        const href = hashFor(`/record/nuccore/${encodeURIComponent(g.chraccver)}`, { from, to, strand: minus ? 2 : '', tab: 'fasta' });
+        return `<li><a href="${href}">${esc(g.chraccver)} : ${fmtN(from)}–${fmtN(to)} (${minus ? 'minus' : 'plus'} strand), get sequence</a></li>`;
+      }).join('')}</ul>` : ''}`;
+  }
+  const rows = Object.entries(doc)
+    .filter(([k, v]) => !['uid', 'summary', 'genomicinfo', 'locationhist'].includes(k) && v !== '' && v !== null && !(Array.isArray(v) && !v.length))
+    .map(([k, v]) => {
+      let val;
+      if (Array.isArray(v)) val = v.map((x) => (typeof x === 'object' ? Object.values(x).filter((y) => typeof y !== 'object').join(' ') : x)).join('; ');
+      else if (typeof v === 'object') val = Object.entries(v).filter(([, y]) => y && typeof y !== 'object').map(([a, y]) => `${a}: ${y}`).join('; ');
+      else val = v;
+      if (!String(val).trim()) return '';
+      return `<tr><th>${esc(k)}</th><td>${esc(String(val).slice(0, 1200))}</td></tr>`;
+    }).join('');
+  return `${extra}<h3>Record summary</h3><table class="kv">${rows}</table>`;
+}
+
+function renderFeatures(body, db, id, features) {
+  const visible = features;
+  const types = [...new Set(visible.map((f) => f.type))];
+  const preferred = types.includes('CDS') ? 'CDS' : types.includes('gene') ? 'gene' : '';
+  const qv = (f, k) => f.q[k]?.[0] || '';
+  const LIMIT = 400;
+
+  body.innerHTML = `
+    <div class="feature-controls">
+      <select id="ft-type"><option value="">All types (${visible.length})</option>
+        ${types.map((t) => `<option value="${esc(t)}"${t === preferred ? ' selected' : ''}>${esc(t)} (${visible.filter((f) => f.type === t).length})</option>`).join('')}
+      </select>
+      <input id="ft-filter" type="search" placeholder="Filter by gene, product, locus tag…">
+      <span class="muted" id="ft-count"></span>
+    </div>
+    <div class="table-wrap"><table class="features"><thead><tr>
+      <th>Type</th><th>Location</th><th>Gene / locus</th><th>Product / note</th><th></th>
+    </tr></thead><tbody></tbody></table></div>`;
+
+  const tbody = $('tbody', body);
+  const draw = () => {
+    const type = $('#ft-type').value;
+    const needle = $('#ft-filter').value.trim().toLowerCase();
+    const rows = visible.filter((f) => (!type || f.type === type)
+      && (!needle || JSON.stringify(f.q).toLowerCase().includes(needle) || f.location.toLowerCase().includes(needle)));
+    $('#ft-count').textContent = rows.length > LIMIT ? `showing ${LIMIT} of ${fmtN(rows.length)}` : `${fmtN(rows.length)} shown`;
+    tbody.innerHTML = rows.slice(0, LIMIT).map((f) => {
+      const idx = features.indexOf(f);
+      const protein = qv(f, 'protein_id');
+      const geneId = (f.q.db_xref || []).find((x) => x.startsWith('GeneID:'))?.slice(7);
+      const name = [qv(f, 'gene'), qv(f, 'locus_tag')].filter(Boolean);
+      return `<tr>
+        <td><span class="badge">${esc(f.type)}</span></td>
+        <td class="mono" title="${esc(f.location)}">${f.parts.length > 1
+          ? `${f.strand === '-' ? 'complement(' : ''}${f.lo}..${f.hi}${f.strand === '-' ? ')' : ''}<br><span class="muted">${f.parts.length} parts</span>`
+          : esc(f.location)}</td>
+        <td>${name.map((n, i) => (i === 0 ? `<b>${esc(n)}</b>` : `<span class="muted">${esc(n)}</span>`)).join('<br>')}</td>
+        <td>${esc(qv(f, 'product') || qv(f, 'note') || qv(f, 'organism'))}
+          ${protein ? `<br><a href="#/record/protein/${encodeURIComponent(cleanSeqId(protein))}">${esc(cleanSeqId(protein))}</a>` : ''}
+          ${geneId ? ` <a href="#/record/gene/${geneId}">Gene ${esc(geneId)}</a>` : ''}</td>
+        <td class="actions"><button class="btn small" data-feature="${idx}">Sequence</button></td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="5" class="muted">No features match.</td></tr>';
+    $$('[data-feature]', tbody).forEach((b) => b.addEventListener('click', () => showFeatureSequence(db, id, features[Number(b.dataset.feature)])));
+  };
+  $('#ft-type').addEventListener('change', draw);
+  $('#ft-filter').addEventListener('input', draw);
+  draw();
+}
+
+async function showFeatureSequence(db, id, f) {
+  const qv = (k) => f.q[k]?.[0] || '';
+  const name = qv('gene') || qv('locus_tag') || f.type;
+  openModal(`${name} · ${f.type}`, loadingHtml('Fetching sequence'));
+  try {
+    // The feature table lists intervals in transcript order, so fetching each one on the
+    // feature's strand and joining them gives the right spliced sequence.
+    let seq = '';
+    for (const p of f.parts.slice(0, 50)) {
+      const strand = db === 'nuccore' ? (f.strand === '-' ? 2 : 1) : undefined;
+      const text = await efetch(db, id, 'fasta', { seq_start: p.from, seq_stop: p.to, strand });
+      seq += parseFasta(text)[0]?.seq || '';
+    }
+    const header = `${id}:${f.location} ${name}${qv('product') ? ' ' + qv('product') : ''}`;
+    const fasta = toFasta([{ header, seq }]);
+    const body = $('#modal-body');
+    body.innerHTML = `<p class="muted stats">${seqStats(seq, db === 'protein')} · ${esc(f.location)}</p>` + textPanelHtml(fasta, `${name.replace(/[^\w.-]/g, '_')}.fasta`);
+    bindTextPanel(body, fasta);
+  } catch (e) {
+    $('#modal-body').innerHTML = errorHtml(e);
+  }
+}
+
+async function renderCds(body, id, safeId, isStale, regionParams, regionKey) {
+  let kind = 'na';
+  body.innerHTML = `
+    <div class="feature-controls">
+      <div class="segmented" role="group">
+        <button data-kind="na" aria-pressed="true">Nucleotide</button>
+        <button data-kind="aa" aria-pressed="false">Protein</button>
+      </div>
+      <input id="cds-filter" type="search" placeholder="Filter, e.g. nirK or nitrite reductase">
+      <span class="muted" id="cds-count"></span>
+    </div>
+    <div id="cds-out">${loadingHtml('Fetching coding sequences')}</div>`;
+
+  const load = async () => {
+    const out = $('#cds-out', body);
+    out.innerHTML = loadingHtml('Fetching coding sequences');
+    try {
+      const text = await cachedFetch(`nuccore|${id}|cds_${kind}|${regionKey}`, () => efetch('nuccore', id, `fasta_cds_${kind}`, regionParams));
+      if (isStale()) return;
+      const records = parseFasta(text);
+      const draw = () => {
+        const needle = $('#cds-filter', body).value.trim().toLowerCase();
+        const hits = needle ? records.filter((r) => r.header.toLowerCase().includes(needle)) : records;
+        $('#cds-count', body).textContent = `${fmtN(hits.length)} of ${fmtN(records.length)} CDS`;
+        const fasta = hits.length ? toFasta(hits) : '';
+        const shown = hits.length > 300 ? toFasta(hits.slice(0, 300)) + `\n… ${hits.length - 300} more (included in Download)\n` : fasta;
+        out.innerHTML = hits.length
+          ? textPanelHtml(shown, `${safeId}_cds_${kind}${needle ? '_' + needle.replace(/[^\w.-]/g, '_') : ''}.fasta`)
+          : '<p class="muted">No coding sequences match.</p>';
+        $('[data-act="copy"]', out)?.addEventListener('click', () => copyText(fasta));
+        const save = $('[data-act="save"]', out);
+        save?.addEventListener('click', () => saveFile(save.dataset.name, fasta));
+      };
+      $('#cds-filter', body).oninput = draw;
+      draw();
+    } catch (e) {
+      if (!isStale()) out.innerHTML = errorHtml(e);
+    }
+  };
+  $$('.segmented button', body).forEach((b) => b.addEventListener('click', () => {
+    kind = b.dataset.kind;
+    $$('.segmented button', body).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    load();
+  }));
+  load();
+}
+
+// --- Modal & settings ----------------------------------------------------------
+
+function openModal(title, html) {
+  const dlg = $('#modal');
+  $('#modal-title').textContent = title;
+  $('#modal-body').innerHTML = html;
+  if (!dlg.open) dlg.showModal();
+}
+
+function openSettings() {
+  openModal('Settings', `
+    <form id="settings-form" class="settings">
+      <label>NCBI API key <span class="muted">(optional, raises the limit from 3 to 10 requests/s)</span>
+        <input name="apiKey" value="${esc(Settings.get('apiKey'))}" autocomplete="off" spellcheck="false"></label>
+      <p class="muted small">Get one free under <a href="https://account.ncbi.nlm.nih.gov/settings/" target="_blank" rel="noopener">NCBI account settings ↗</a> → API Key Management.</p>
+      <label>Contact email <span class="muted">(optional, NCBI asks scripts to identify themselves)</span>
+        <input name="email" type="email" value="${esc(Settings.get('email'))}"></label>
+      <p class="muted small">Both are stored only in this browser.</p>
+      <div class="filters-actions"><button class="btn primary" type="submit">Save</button></div>
+    </form>`);
+  $('#settings-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    Settings.set('apiKey', String(fd.get('apiKey')).trim());
+    Settings.set('email', String(fd.get('email')).trim());
+    $('#modal').close();
+    toast('Settings saved');
+  });
+}
+
+// --- Theme -------------------------------------------------------------------
+
+function applyTheme(theme) {
+  if (theme) document.documentElement.dataset.theme = theme;
+  else delete document.documentElement.dataset.theme;
+}
+
+function toggleTheme() {
+  const dark = document.documentElement.dataset.theme
+    ? document.documentElement.dataset.theme === 'dark'
+    : matchMedia('(prefers-color-scheme: dark)').matches;
+  const next = dark ? 'light' : 'dark';
+  Settings.set('theme', next);
+  applyTheme(next);
+}
+
+// --- Boot --------------------------------------------------------------------
+
+function init() {
+  applyTheme(Settings.get('theme'));
+  $('#db').innerHTML = DATABASES.map((d) => `<option value="${d.id}">${d.label}</option>`).join('');
+  $('#search').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const db = $('#db').value;
+    const term = $('#q').value.trim();
+    if (!term) return $('#q').focus();
+    // Keep organism filter when searching again from a results page of the same db.
+    const { parts, params } = parseHash();
+    const keep = {};
+    if (parts[0] === 'search' && params.get('db') === db) {
+      for (const [k, v] of params) if (k.startsWith('f_')) keep[k] = v;
+    }
+    go('/search', { db, term, ...keep });
+  });
+  $('#settings-btn').addEventListener('click', openSettings);
+  $('#theme-btn').addEventListener('click', toggleTheme);
+  $('#modal-close').addEventListener('click', () => $('#modal').close());
+  $('#modal').addEventListener('click', (e) => { if (e.target === e.currentTarget) e.currentTarget.close(); });
+  window.addEventListener('hashchange', route);
+  route();
+}
+
+init();

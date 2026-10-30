@@ -1,0 +1,220 @@
+'use strict';
+
+// Thin client for NCBI E-utilities. Everything here talks to eutils.ncbi.nlm.nih.gov,
+// which sends `Access-Control-Allow-Origin: *`, so the browser can call it directly.
+
+const EUTILS_BASE = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/';
+const TOOL_NAME = 'entrez-lite';
+
+const Settings = {
+  get(key) {
+    try { return localStorage.getItem('el.' + key) || ''; } catch { return ''; }
+  },
+  set(key, value) {
+    try {
+      if (value) localStorage.setItem('el.' + key, value);
+      else localStorage.removeItem('el.' + key);
+    } catch { /* storage unavailable: settings last for this page only */ }
+  },
+};
+
+class EutilsError extends Error {}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// NCBI allows 3 requests/s without an API key and 10/s with one.
+const throttle = (() => {
+  let next = 0;
+  return async () => {
+    const gap = Settings.get('apiKey') ? 110 : 350;
+    const now = Date.now();
+    const at = Math.max(now, next);
+    next = at + gap;
+    if (at > now) await sleep(at - now);
+  };
+})();
+
+async function eutilsRequest(endpoint, params, { json = true } = {}) {
+  const body = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') body.set(k, String(v));
+  }
+  body.set('tool', TOOL_NAME);
+  const email = Settings.get('email');
+  if (email) body.set('email', email);
+  const apiKey = Settings.get('apiKey');
+  if (apiKey) body.set('api_key', apiKey);
+  if (json) body.set('retmode', 'json');
+
+  const url = EUTILS_BASE + endpoint;
+  const qs = body.toString();
+
+  for (let attempt = 0; ; attempt++) {
+    await throttle();
+    let res;
+    try {
+      // Long ID lists go as a form POST (still a "simple" CORS request, no preflight).
+      res = qs.length > 1800
+        ? await fetch(url, { method: 'POST', body })
+        : await fetch(url + '?' + qs);
+    } catch {
+      if (attempt < 2) { await sleep(600); continue; }
+      throw new EutilsError('Network error: could not reach NCBI.');
+    }
+    if ((res.status === 429 || res.status >= 500) && attempt < 3) {
+      await sleep(800 * 2 ** attempt);
+      continue;
+    }
+    const text = await res.text();
+    if (/^\s*(<!doctype html|<html)/i.test(text)) {
+      throw new EutilsError(`NCBI returned a web page instead of data (HTTP ${res.status}). It may be a bot check or an outage; try again shortly or add an API key in Settings.`);
+    }
+    if (!res.ok) {
+      throw new EutilsError(`NCBI returned HTTP ${res.status}: ${text.replace(/<[^>]+>/g, ' ').trim().slice(0, 240)}`);
+    }
+    if (json) {
+      let data;
+      try { data = JSON.parse(text); } catch { throw new EutilsError('NCBI returned malformed JSON.'); }
+      const err = data.error || data.ERROR || data.esearchresult?.ERROR;
+      if (err) throw new EutilsError(typeof err === 'string' ? err : JSON.stringify(err));
+      return data;
+    }
+    const head = text.slice(0, 300);
+    if (/^\s*Error\b|<ERROR>/i.test(head)) {
+      let msg = head.replace(/<[^>]+>/g, ' ').trim();
+      // efetch sometimes letter-spaces its errors ("F a i l e d  t o ..."); undo that.
+      if (/(\S \S ){3}/.test(msg)) msg = msg.replace(/(\S) (?=\S)/g, '$1').replace(/ {2,}/g, ' ').replace(/^Error:(?=\S)/, 'Error: ');
+      throw new EutilsError(msg.split('\n')[0]);
+    }
+    return text;
+  }
+}
+
+async function esearch(db, term, { retstart = 0, retmax = 20, sort } = {}) {
+  const data = await eutilsRequest('esearch.fcgi', { db, term, retstart, retmax, sort });
+  const r = data.esearchresult || {};
+  return {
+    count: Number(r.count || 0),
+    ids: r.idlist || [],
+    translation: r.querytranslation || '',
+    notFound: [
+      ...(r.errorlist?.phrasesnotfound || []),
+      ...(r.warninglist?.phrasesignored || []),
+    ],
+    warnings: r.warninglist?.outputmessages || [],
+  };
+}
+
+async function esummary(db, ids) {
+  if (!ids.length) return [];
+  const data = await eutilsRequest('esummary.fcgi', { db, id: ids.join(',') });
+  const result = data.result || {};
+  return (result.uids || []).map((uid) => result[uid]).filter((d) => d && !d.error);
+}
+
+function efetch(db, ids, rettype, extra = {}) {
+  const id = Array.isArray(ids) ? ids.join(',') : ids;
+  return eutilsRequest('efetch.fcgi', { db, id, rettype, retmode: 'text', ...extra }, { json: false });
+}
+
+async function elinkCheck(dbfrom, id) {
+  const data = await eutilsRequest('elink.fcgi', { dbfrom, id, cmd: 'acheck' });
+  const infos = data.linksets?.[0]?.idchecklist?.idlinksets?.[0]?.linkinfos || [];
+  return infos.map((i) => ({
+    dbto: i.dbto,
+    linkname: i.linkname,
+    label: i.htmltag || i.menutag || i.linkname,
+    priority: Number(i.priority || 999),
+  })).sort((a, b) => a.priority - b.priority);
+}
+
+async function elinkNeighbor(dbfrom, id, linkname) {
+  const data = await eutilsRequest('elink.fcgi', { dbfrom, id, linkname, cmd: 'neighbor' });
+  const set = (data.linksets?.[0]?.linksetdbs || []).find((s) => s.linkname === linkname);
+  return { dbto: set?.dbto || linkname.split('_')[1], ids: set?.links || [] };
+}
+
+// --- Parsers ---------------------------------------------------------------
+
+// Parses NCBI's five-column feature table (efetch rettype=ft). A table fetched for a
+// region (seq_start) is numbered from that region's start, so `offset` shifts it back.
+function parseFeatureTable(text, offset = 0) {
+  const shift = (s) => s.replace(/\d+/, (n) => String(Number(n) + offset));
+  const features = [];
+  let cur = null;
+  for (const line of text.split('\n')) {
+    if (!line.trim() || line.startsWith('>')) continue;
+    const cols = line.split('\t');
+    if (cols[0] !== '') {
+      const iv = { start: shift(cols[0]), stop: shift(cols[1]) };
+      if (cols[2]) {
+        cur = { type: cols[2].trim(), intervals: [iv], q: {} };
+        features.push(cur);
+      } else if (cur) {
+        cur.intervals.push(iv);
+      }
+    } else if (cur && cols[3]) {
+      (cur.q[cols[3]] ||= []).push(cols[4] ?? '');
+    }
+  }
+  const parsed = features.map((f) => {
+    const nums = f.intervals.map((iv) => ({
+      a: parseInt(iv.start.replace(/[<>^]/g, ''), 10),
+      b: parseInt(iv.stop.replace(/[<>^]/g, ''), 10),
+    }));
+    const minus = nums[0].a > nums[0].b;
+    const all = nums.flatMap((n) => [n.a, n.b]);
+    const spans = f.intervals.map((iv) =>
+      minus ? `${iv.stop}..${iv.start}` : `${iv.start}..${iv.stop}`);
+    const ordered = minus ? [...spans].reverse() : spans;
+    const inner = ordered.length > 1 ? `join(${ordered.join(',')})` : ordered[0];
+    return {
+      type: f.type,
+      q: f.q,
+      strand: minus ? '-' : '+',
+      lo: Math.min(...all),
+      hi: Math.max(...all),
+      // Intervals in transcript order, as plain numbers, for fetching spliced sequence.
+      parts: nums.map((n) => ({ from: Math.min(n.a, n.b), to: Math.max(n.a, n.b) })),
+      location: minus ? `complement(${inner})` : inner,
+    };
+  });
+
+  // In RefSeq tables the gene name and locus tag sit on the `gene` feature only;
+  // copy them onto the CDS/RNA features that span the same region.
+  const genes = new Map();
+  for (const f of parsed) if (f.type === 'gene') genes.set(`${f.lo}|${f.hi}|${f.strand}`, f);
+  for (const f of parsed) {
+    const gene = f.type !== 'gene' && genes.get(`${f.lo}|${f.hi}|${f.strand}`);
+    if (!gene) continue;
+    for (const k of ['gene', 'locus_tag']) if (!f.q[k] && gene.q[k]) f.q[k] = gene.q[k];
+  }
+  return parsed;
+}
+
+function parseFasta(text) {
+  const records = [];
+  let cur = null;
+  for (const line of text.split('\n')) {
+    if (line.startsWith('>')) {
+      cur = { header: line.slice(1).trim(), seq: '' };
+      records.push(cur);
+    } else if (cur) {
+      cur.seq += line.trim();
+    }
+  }
+  return records;
+}
+
+function toFasta(records, width = 70) {
+  return records.map((r) => {
+    const lines = [];
+    for (let i = 0; i < r.seq.length; i += width) lines.push(r.seq.slice(i, i + width));
+    return `>${r.header}\n${lines.join('\n')}`;
+  }).join('\n') + '\n';
+}
+
+// "ref|WP_047306321.1|" -> "WP_047306321.1"
+function cleanSeqId(value) {
+  return String(value).split('|').filter(Boolean).pop() || value;
+}
