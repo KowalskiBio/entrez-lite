@@ -60,6 +60,41 @@ const Recent = {
   },
 };
 
+// --- Search history ----------------------------------------------------------
+
+// Numbered searches, like NCBI's Advanced search history, so "#1 AND #3" works in
+// the search box. Numbers are never reused, even after clearing: an old bookmark
+// that says #4 then reports the search missing instead of meaning a different one.
+let historyFallback = null; // used when the browser blocks storage
+
+const SearchHistory = {
+  MAX: 100,
+  load() {
+    try {
+      const h = JSON.parse(localStorage.getItem('el.history') || 'null');
+      if (h && Array.isArray(h.items)) return h;
+    } catch { return historyFallback ||= { next: 1, items: [] }; }
+    return { next: 1, items: [] };
+  },
+  save(h) {
+    try { localStorage.setItem('el.history', JSON.stringify(h)); } catch { historyFallback = h; }
+  },
+  // Running the same query again (another page, another sort) keeps its number.
+  add({ db, query, count, params }) {
+    const h = this.load();
+    let item = h.items.find((i) => i.db === db && i.query === query);
+    if (item) h.items = h.items.filter((i) => i !== item);
+    else item = { n: h.next++, db, query };
+    Object.assign(item, { count, params, at: Date.now() });
+    h.items = [item, ...h.items].slice(0, this.MAX);
+    this.save(h);
+    return item.n;
+  },
+  clear() {
+    this.save({ next: this.load().next, items: [] });
+  },
+};
+
 // --- Filters ---------------------------------------------------------------
 
 // Each filter maps a form field to an Entrez query clause, mirroring NCBI's sidebar.
@@ -269,6 +304,7 @@ function route() {
   if (parts[0] === 'record' && parts[1] && parts[2]) return renderRecord(parts[1], parts[2], params, token);
   if (parts[0] === 'links' && parts[3]) return renderLinks(parts[1], parts[2], parts[3], params, token);
   if (parts[0] === 'genome' && parts[1]) return renderGenome(parts[1], token);
+  if (parts[0] === 'history') return renderHistory();
   return renderHome();
 }
 
@@ -311,7 +347,8 @@ function renderHome() {
           <h3>Search tips</h3>
           <ul class="tips">
             <li>Use fields like NCBI does: <code>nirK[Gene Name]</code>, <code>"Pseudomonas fluorescens"[Organism]</code>, <code>300:2000[SLEN]</code>.</li>
-            <li>Paste an accession (e.g. <code>HQ288918.1</code>) to jump to the record.</li>
+            <li>Paste an accession (e.g. <code>HQ288918.1</code>) to jump to the record, or a whole list of them, one per line, to get them all.</li>
+            <li>Every search gets a number. Combine them like <code>#1 AND #3</code>, or use the <a href="#/history">History</a> page.</li>
             <li>On a genome or contig, open the <b>Features</b> or <b>CDS</b> tab to pull out a single gene.</li>
             <li>Add a free NCBI API key in Settings for faster requests.</li>
           </ul>
@@ -321,9 +358,67 @@ function renderHome() {
   $('#clear-recent')?.addEventListener('click', () => { Recent.clear(); renderHome(); });
 }
 
-// --- Search ----------------------------------------------------------------
+// --- History -----------------------------------------------------------------
 
-const ACCESSION_RE = /^([A-Z]{1,2}_?[A-Z0-9]*\d{5,}(\.\d+)?|[A-Z]{1,4}\d{5,8}(\.\d+)?)$/;
+const QUERY_SHOWN = 300;
+
+function renderHistory() {
+  const { items } = SearchHistory.load();
+  const when = (t) => new Date(t).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+  const shortQuery = (q) => (q.length > QUERY_SHOWN ? q.slice(0, QUERY_SHOWN) + '…' : q);
+  const row = (i) => `
+    <tr>
+      <td class="mono"><b>#${i.n}</b></td>
+      <td><span class="db-chip">${esc(dbLabel(i.db))}</span></td>
+      <td class="history-query"><a href="${hashFor('/search', i.params || { db: i.db, term: i.query })}" title="Run again"><code>${esc(shortQuery(i.query))}</code></a></td>
+      <td class="num">${fmtN(i.count)}</td>
+      <td class="muted mono">${esc(when(i.at))}</td>
+      <td class="actions"><div class="segmented">${['AND', 'OR', 'NOT'].map((op) =>
+        `<button type="button" data-n="${i.n}" data-db="${esc(i.db)}" data-op="${op}" title="Add #${i.n} to the query with ${op}">${op}</button>`).join('')}</div></td>
+    </tr>`;
+  const startDb = items[0]?.db || 'nuccore';
+
+  main.innerHTML = `
+    <section class="history">
+      <div class="results-head">
+        <div><h2>Search history</h2><span class="muted">${items.length ? `${fmtN(items.length)} search${items.length === 1 ? '' : 'es'} · ` : ''}kept in this browser</span></div>
+        ${items.length ? '<button class="btn ghost small" id="clear-history">Clear history</button>' : ''}
+      </div>
+      <p class="muted">Each search keeps its number. Combine searches from the same database with AND, OR and NOT, here or straight in the search bar.</p>
+      <form class="card builder" id="builder">
+        <select name="db" aria-label="Database">${DATABASES.filter((d) => d.id !== 'genome').map((d) =>
+          `<option value="${d.id}"${d.id === startDb ? ' selected' : ''}>${d.label}</option>`).join('')}</select>
+        <input name="q" placeholder="e.g. #1 AND #3" autocomplete="off" spellcheck="false" aria-label="Combined query">
+        <button class="btn primary" type="submit">Search</button>
+      </form>
+      ${items.length ? `
+        <div class="table-wrap"><table class="history-table">
+          <thead><tr><th>#</th><th>Database</th><th>Query</th><th class="num">Results</th><th>Time</th><th class="actions">Add to query</th></tr></thead>
+          <tbody>${items.map(row).join('')}</tbody>
+        </table></div>` : '<p class="muted">No searches yet. Each search you run is added here with a number.</p>'}
+    </section>`;
+
+  const form = $('#builder');
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const q = form.q.value.trim();
+    if (!q) return form.q.focus();
+    go('/search', { db: form.db.value, term: q });
+  });
+  $$('[data-op]', main).forEach((b) => b.addEventListener('click', () => {
+    const q = form.q.value.trim();
+    const { n, db, op } = b.dataset;
+    if (q && form.db.value !== db) {
+      return toast(`#${n} is a ${dbLabel(db)} search; the query so far is ${dbLabel(form.db.value)}.`);
+    }
+    form.db.value = db;
+    form.q.value = q ? `${q} ${op} #${n}` : `#${n}`;
+    form.q.focus();
+  }));
+  $('#clear-history')?.addEventListener('click', () => { SearchHistory.clear(); renderHistory(); });
+}
+
+// --- Search ----------------------------------------------------------------
 
 async function renderSearch(params, token) {
   const db = params.get('db') || 'nuccore';
@@ -334,12 +429,19 @@ async function renderSearch(params, token) {
   // Relevance is NCBI's own default on the website; E-utilities defaults to newest first.
   const sort = params.get('sort') === 'date' ? 'date' : '';
   const f = readFilters(params);
-  const fullTerm = buildTerm(db, term, f);
+  const list = idListTerm(term);
+  let fullTerm = '';
+  let termError = null;
+  try {
+    fullTerm = buildTerm(db, expandHistoryRefs(list ? list.term : term, SearchHistory.load().items, db, dbLabel), f);
+  } catch (e) {
+    termError = e;
+  }
 
   main.innerHTML = `
     <div class="search-layout">
       <aside>${filtersFormHtml(db, f)}</aside>
-      <section id="results">${fullTerm ? loadingHtml('Searching ' + dbLabel(db)) : '<p class="muted">Type a search term above.</p>'}</section>
+      <section id="results">${fullTerm || termError ? loadingHtml('Searching ' + dbLabel(db)) : '<p class="muted">Type a search term above.</p>'}</section>
     </div>`;
 
   const baseParams = () => {
@@ -357,6 +459,10 @@ async function renderSearch(params, token) {
   });
   $('#clear-filters').addEventListener('click', () => go('/search', { db, term }));
 
+  if (termError) {
+    $('#results').innerHTML = errorHtml(termError) + '<p class="muted">See your numbered searches on the <a href="#/history">History</a> page.</p>';
+    return;
+  }
   if (!fullTerm) return;
 
   // GCF_/GCA_ accessions open the genome page whatever database is selected.
@@ -388,7 +494,11 @@ async function renderSearch(params, token) {
     const orgHint = await organismHint(db, term, f, r);
     if (token !== routeToken) return;
 
-    Recent.add({ kind: 'search', db, label: [term, ...Object.values(f)].filter(Boolean).join(' · '), count: r.count, params: { ...baseParams() } });
+    const label = [list ? `List of ${fmtN(list.count)} IDs` : term, ...Object.values(f)].filter(Boolean).join(' · ');
+    Recent.add({ kind: 'search', db, label, count: r.count, params: { ...baseParams() } });
+    const historyN = SearchHistory.add({ db, query: fullTerm, count: r.count, params: { ...baseParams() } });
+    // For a pasted list, report the IDs themselves rather than NCBI's "X[accn]" phrases.
+    const missing = list ? r.notFound.map((p) => p.replace(/\[(accn|uid)\]$/i, '')) : r.notFound;
 
     const pages = Math.min(Math.ceil(r.count / size), Math.floor(9999 / size) + 1);
     const from = r.count ? (page - 1) * size + 1 : 0;
@@ -403,11 +513,12 @@ async function renderSearch(params, token) {
       </div>
       ${orgHint ? `<div class="notice">Your search also matched <b>${esc(orgHint.org)}</b> as plain text, so records from other organisms that only mention it are included.
         <a href="${esc(orgHint.href)}">Show only <i>${esc(orgHint.org)}</i> (${fmtN(orgHint.count)})</a></div>` : ''}
-      ${r.notFound.length ? `<div class="notice">Not found or ignored: <b>${esc(r.notFound.join(', '))}</b></div>` : ''}
+      ${missing.length ? `<div class="notice">${list ? `${fmtN(missing.length)} of ${fmtN(list.count)} IDs not found` : 'Not found or ignored'}: <b>${esc(missing.join(', '))}</b></div>` : ''}
       <details class="details">
         <summary>Search details</summary>
         <dl><dt>Query sent</dt><dd><code>${esc(fullTerm)}</code></dd>
-        <dt>NCBI translation</dt><dd><code>${esc(r.translation || 'none')}</code></dd></dl>
+        <dt>NCBI translation</dt><dd><code>${esc(r.translation || 'none')}</code></dd>
+        <dt>History</dt><dd>Saved as <b>#${historyN}</b>. Combine it with other searches on the <a href="#/history">History</a> page.</dd></dl>
       </details>
       ${r.count ? `
         <div class="toolbar">
@@ -424,8 +535,8 @@ async function renderSearch(params, token) {
     bindPager(results, (p) => go('/search', { ...baseParams(), page: p }), pages);
     bindSelection(results);
     bindDownload(results, db, docs, async () => {
-      const all = await esearch(db, fullTerm, { retmax: 500, sort: esort });
-      return all.ids;
+      const saved = await esearchHistory(db, fullTerm, { sort: esort });
+      return { ...saved, count: Math.min(saved.count, MAX_DOWNLOAD) };
     });
   } catch (e) {
     if (token === routeToken) results.innerHTML = errorHtml(e);
@@ -480,53 +591,70 @@ function downloadFormats(db) {
   return [['csv', 'Summary (CSV)'], ['ids', 'ID list']];
 }
 
+// "All results" reads a search saved on NCBI's history server in batches, so it is
+// not held to esearch's 10,000-ID limit. This cap only stops a tab from building a
+// file of several gigabytes by accident; it is about 100 requests without a key.
+const MAX_DOWNLOAD = 50_000;
+
 function downloadControlsHtml(db, count) {
   return `
     <div class="download">
       <select id="dl-scope">
         <option value="selected">Selected</option>
         <option value="page">This page</option>
-        ${count <= 500 ? `<option value="all">All ${fmtN(count)} results</option>` : ''}
+        <option value="all">${count > MAX_DOWNLOAD ? `First ${fmtN(MAX_DOWNLOAD)}` : `All ${fmtN(count)}`} results</option>
       </select>
       <select id="dl-format">${downloadFormats(db).map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
       <button class="btn" id="dl-go">Download</button>
     </div>`;
 }
 
-function bindDownload(root, db, pageDocs, getAllIds) {
+class DownloadCancelled extends Error {}
+
+// getAll() returns the record source for "All results": { ids } or a saved search.
+function bindDownload(root, db, pageDocs, getAll) {
   const btn = $('#dl-go', root);
   if (!btn) return;
+  let job = null;
   btn.addEventListener('click', async () => {
+    // While a download runs, the same button cancels it after the current batch.
+    if (job) { job.cancelled = true; btn.textContent = 'Cancelling…'; return; }
     const scope = $('#dl-scope', root).value;
     const format = $('#dl-format', root).value;
-    let ids = scope === 'selected' ? $$('.sel:checked', root).map((c) => c.value) : pageDocs.map((d) => d.uid);
+    const ids = scope === 'selected' ? $$('.sel:checked', root).map((c) => c.value) : pageDocs.map((d) => d.uid);
     if (scope === 'selected' && !ids.length) return toast('Select some records first, or choose "This page".');
-    btn.disabled = true;
     const label = btn.textContent;
+    const mine = job = { cancelled: false };
     btn.textContent = 'Preparing…';
     try {
-      if (scope === 'all') ids = await getAllIds();
-      await downloadRecords(db, ids, format);
+      const source = scope === 'all' ? await getAll() : { ids };
+      if (mine.cancelled) throw new DownloadCancelled();
+      await downloadRecords(db, source, format, (done, total) => {
+        if (mine.cancelled) throw new DownloadCancelled();
+        if (done < total) btn.textContent = `Cancel · ${fmtN(done)} of ${fmtN(total)}`;
+      });
     } catch (e) {
-      toast(e.message);
+      toast(e instanceof DownloadCancelled ? 'Download cancelled.' : e.message);
     } finally {
-      btn.disabled = false;
+      job = null;
       btn.textContent = label;
     }
   });
 }
 
-async function downloadRecords(db, ids, format) {
+async function downloadRecords(db, source, format, onProgress) {
   const stamp = new Date().toISOString().slice(0, 10);
-  const base = `${db}_${ids.length}_${stamp}`;
-  if (format === 'fasta') return saveFile(`${base}.fasta`, await efetch(db, ids, 'fasta'));
-  if (format === 'gb') return saveFile(`${base}.${db === 'protein' ? 'gp' : 'gb'}`, await efetch(db, ids, db === 'protein' ? 'gp' : 'gb'));
-  if (format === 'abstract') return saveFile(`${base}_abstracts.txt`, await efetch(db, ids, 'abstract'));
-  if (format === 'medline') return saveFile(`${base}.medline.txt`, await efetch(db, ids, 'medline'));
+  const base = `${db}_${sourceSize(source)}_${stamp}`;
+  const text = (rettype, batch = 500) => efetchAll(db, source, rettype, { batch, onProgress });
+  if (format === 'fasta') return saveFile(`${base}.fasta`, await text('fasta'));
+  // A GenBank flat file can be a whole genome, so these go in smaller batches.
+  if (format === 'gb') return saveFile(`${base}.${db === 'protein' ? 'gp' : 'gb'}`, await text(db === 'protein' ? 'gp' : 'gb', 100));
+  if (format === 'abstract') return saveFile(`${base}_abstracts.txt`, await text('abstract'));
+  if (format === 'medline') return saveFile(`${base}.medline.txt`, await text('medline'));
+  if (format === 'acc') return saveFile(`${base}_accessions.txt`, await text('acc'));
+  if (format === 'ids' && source.ids) return saveFile(`${base}_ids.txt`, source.ids.join('\n') + '\n');
 
-  const docs = [];
-  for (let i = 0; i < ids.length; i += 200) docs.push(...(await esummary(db, ids.slice(i, i + 200))));
-  if (format === 'acc') return saveFile(`${base}_accessions.txt`, docs.map((d) => summarize(db, d).id).join('\n') + '\n');
+  const docs = await esummaryAll(db, source, { onProgress });
   if (format === 'ids') return saveFile(`${base}_ids.txt`, docs.map((d) => d.uid).join('\n') + '\n');
 
   const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
@@ -598,7 +726,7 @@ async function renderLinks(dbfrom, id, linkname, params, token) {
         ${paginationHtml(page, pages)}` : '<p class="muted">No linked records.</p>'}`;
     bindPager(results, (p) => go(`/links/${dbfrom}/${encodeURIComponent(id)}/${linkname}`, { page: p }), pages);
     bindSelection(results);
-    bindDownload(results, dbto, docs, async () => ids.slice(0, 500));
+    bindDownload(results, dbto, docs, async () => ({ ids: ids.slice(0, MAX_DOWNLOAD) }));
   } catch (e) {
     if (token === routeToken) results.innerHTML = errorHtml(e);
   }
@@ -1659,6 +1787,16 @@ function init() {
       for (const [k, v] of params) if (k.startsWith('f_')) keep[k] = v;
     }
     go('/search', { db, term, ...keep });
+  });
+  // Browsers treat line breaks pasted into a one-line input differently, and some
+  // drop them, so a column of accessions copied from a spreadsheet would arrive as
+  // one long word. Turn them into spaces first.
+  $('#q').addEventListener('paste', (e) => {
+    const text = e.clipboardData?.getData('text') || '';
+    if (!/[\r\n]/.test(text.trim())) return;
+    e.preventDefault();
+    const q = e.target;
+    q.setRangeText(text.trim().split(/\s+/).join(' '), q.selectionStart, q.selectionEnd, 'end');
   });
   bindTaxonSuggest();
   $('#settings-btn').addEventListener('click', openSettings);

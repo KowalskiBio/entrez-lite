@@ -1,0 +1,42 @@
+>Feature ref|NZ_CP027720.1|
+1	1521	gene
+			gene	dnaA
+			locus_tag	C4K13_RS00005
+			old_locus_tag	C4K13_0001
+1	1521	CDS
+			product	chromosomal replication initiator protein DnaA
+			transl_table	11
+			protein_id	ref|WP_041987916.1|
+			inference	COORDINATES: similar to AA sequence:RefSeq:NP_064721.1
+1560	2663	gene
+			gene	dnaN
+			locus_tag	C4K13_RS00010
+			old_locus_tag	C4K13_0002
+1560	2663	CDS
+			product	DNA polymerase III subunit beta
+			EC_number	2.7.7.7
+			transl_table	11
+			protein_id	ref|WP_009046209.1|
+			inference	COORDINATES: similar to AA sequence:RefSeq:NP_064722.1
+2684	3787	gene
+			gene	recF
+			locus_tag	C4K13_RS00015
+			old_locus_tag	C4K13_0003
+2684	3787	CDS
+			product	DNA replication/repair protein RecF
+			prot_note	All proteins in this family for which functions are known are DNA-binding proteins that assist the filamentation of RecA onto DNA for the initiation of recombination or recombinational repair.
+			transl_table	11
+			protein_id	ref|WP_007924472.1|
+			note	All proteins in this family for which functions are known are DNA-binding proteins that assist the filamentation of RecA onto DNA for the initiation of recombination or recombinational repair.
+			inference	COORDINATES: similar to AA sequence:RefSeq:WP_003253154.1
+3792	>6000	gene
+			gene	gyrB
+			locus_tag	C4K13_RS00020
+			old_locus_tag	C4K13_0004
+3792	>6000	CDS
+			product	DNA topoisomerase (ATP-hydrolyzing) subunit B
+			EC_number	5.6.2.2
+			transl_table	11
+			protein_id	ref|WP_007924471.1|
+			inference	COORDINATES: similar to AA sequence:RefSeq:WP_002551319.1
+

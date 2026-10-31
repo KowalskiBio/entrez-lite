@@ -58,7 +58,7 @@ It's three files and a stylesheet. Open `index.html` and search.
     </td>
     <td valign="top">
       <h3>Take it with you</h3>
-      Download selected records, the current page or up to 500 results as FASTA, GenBank, an accession list or CSV. Every view has its own URL, so you can bookmark it or send it to someone.
+      Download selected records, the current page or all results (up to 50,000) as FASTA, GenBank, an accession list or CSV. Paste a list of accessions to get them all at once. Every search gets a number in your <b>History</b>, so <code>#1 AND #3</code> combines two of them. Every view has its own URL, so you can bookmark it or send it to someone.
     </td>
   </tr>
 </table>
@@ -116,7 +116,9 @@ NCBI allows 3 requests per second without an API key. Paste a free key into **Se
 |---|---|
 | One gene from a bacterial genome | Open the genome or contig, go to **CDS**, type the gene name, then **Download** |
 | The same gene when the name finds nothing | On **CDS** or **Features**, use **Search conserved domains instead**, then pick the domain whose definition names your enzyme |
-| The same gene from many strains | Search Protein for `nirK[Gene Name] AND "Pseudomonas"[Organism]`, choose **All results** (up to 500) and **FASTA** |
+| The same gene from many strains | Search Protein for `nirK[Gene Name] AND "Pseudomonas"[Organism]`, choose **All results** and **FASTA** |
+| Every accession from a paper's table | Copy the column and paste it into the search box. Any that don't exist are listed above the results |
+| Two searches combined | Run both, then search `#1 AND #2` (or `OR`, `NOT`), or build it on the **History** page |
 | A human gene with its introns | Search Gene, open the record, click the genomic location link |
 | Just the mature CDS of that gene | From the same region, go to **Features**, pick the CDS row, click **Sequence** |
 | A record you already know | Paste the accession (`HQ288918.1`) into the search box |
@@ -131,6 +133,7 @@ index.html        page shell
 css/styles.css    light and dark theme, one set of tokens
 js/eutils.js      E-utilities and Datasets clients: throttling, retries, parsers
 js/app.js         hash router and all the views
+tests/            node --test suite, with saved NCBI responses as fixtures
 ```
 
 Everything goes through [E-utilities](https://www.ncbi.nlm.nih.gov/books/NBK25501/): `esearch` for hits, `esummary` for the result list, `efetch` for GenBank, FASTA, feature tables and CDS, and `elink` for related records. Genome pages come from the [Datasets v2 API](https://www.ncbi.nlm.nih.gov/datasets/docs/v2/api/), which provides the assembly report, CheckM, ANI and the sequence list. Both services allow cross-origin requests, so the browser calls them directly and no proxy is needed.
@@ -142,12 +145,25 @@ A few details that took some testing:
 - **Region feature tables.** When you fetch a feature table for a sub-range, NCBI numbers it from the start of that range. The parser shifts the coordinates back to positions on the full sequence.
 - **Locus tags.** In RefSeq tables, the gene name and locus tag sit only on the `gene` feature. They're copied onto the CDS and RNA features that span the same coordinates, so every row has a name.
 - **Long ID lists.** These go as form-encoded POSTs, which still count as simple CORS requests and skip the preflight.
+- **Big downloads.** **All results** saves the search on NCBI's history server and reads it back in batches of 500, so it isn't held to the 10,000 IDs that `esearch` will page through. The button shows progress and cancels the download if you click it again.
+- **Search history.** `#3` is expanded into the saved query in your browser before the search goes out, rather than left for NCBI to resolve against a session that expires within hours. Old bookmarks with `#3` in them keep working, and searches from different databases can't be mixed by accident.
+
+### Tests
+
+The parsers and the request code have a test suite. It needs Node 20 or newer and nothing else:
+
+```bash
+node --test
+```
+
+The feature-table and FASTA tests run against real `efetch` responses saved in `tests/fixtures/`. The request tests stand in for the network, so the suite runs offline.
 
 ## Limits
 
 - **BLAST.** **Run BLAST** and **Open on NCBI** go to the NCBI website, so they break when it does.
 - **No Graphics view.** There's no graphical sequence viewer like NCBI's.
-- **10,000 results.** Paging stops there because the API stops there. Narrow the query to see more.
+- **10,000 results.** Paging through the list stops there because the API stops there. **All results** downloads go further, up to 50,000 records.
+- **History is per browser.** It lives in this browser's local storage, like your settings, so it doesn't follow you to another computer.
 - **Large records.** Anything over 1 Mb asks before loading in full. Over 20 Mb, set a region first.
 
 ## License

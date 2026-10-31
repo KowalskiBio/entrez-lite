@@ -367,3 +367,15 @@ dialog::backdrop { background: rgb(10 14 20 / 0.45); }
   .hero h1 { font-size: 1.5rem; }
 }
 .genome-table td:last-child { white-space: nowrap; }
+
+/* --- Search history --- */
+
+.history { display: flex; flex-direction: column; gap: 14px; }
+.history > p { margin: 0; }
+.builder { display: flex; flex-direction: row; gap: 8px; flex-wrap: wrap; }
+.builder select { width: 170px; flex: none; }
+.builder input { flex: 1; min-width: 200px; font-family: var(--mono); }
+.history-query { min-width: 16rem; }
+.history-query code { word-break: break-word; }
+.history-table .segmented button { padding: 4px 9px; font-size: 0.8rem; }
+@media (max-width: 640px) { .builder select { width: 100%; } }

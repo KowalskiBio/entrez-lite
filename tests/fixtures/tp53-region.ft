@@ -1,0 +1,859 @@
+>Feature ref|NC_000017.11|
+<1	308	misc_feature
+			region	biological region
+			gene	-
+			SO_type	biological_region
+			standard_name	H3K4me1 hESC enhancer GRCh37_chr17:7571230-7572027
+			db_xref	GeneID:127885673
+<1	308	regulatory
+			gene	-
+			note	H3K4me1 hESC enhancer chr17:7571230-7572027 (GRCh37/hg19 assembly coordinates)
+			experiment	EXISTENCE:reporter gene assay evidence [ECO:0000049][PMID:30033119]
+			function	activates a minimal SCP1, AML or CMV promoter by ChIP-STARR-seq in naive H9 embryonic stem cells {active_cell/tissue: H9 hESC(naive)}
+			regulatory_class	enhancer
+			db_xref	GeneID:127885673
+19089	20	gene
+			gene	TP53
+			gene_syn	BCC7
+			gene_syn	BMFS5
+			gene_syn	LFS1
+			gene_syn	P53
+			gene_syn	TRP53
+			gene_desc	tumor protein p53
+			db_xref	GeneID:7157
+			db_xref	HGNC:HGNC:11998
+			db_xref	MIM:191170
+19089	18976	mRNA
+8218	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 2
+			transcript_id	ref|NM_001276761.3|
+			gene	TP53
+			db_xref	GeneID:7157
+19089	18976	mRNA
+8218	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 2
+			transcript_id	ref|NM_001126112.3|
+			gene	TP53
+			db_xref	GeneID:7157
+19089	18976	mRNA
+8218	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4806
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 12
+			transcript_id	ref|NM_001407269.1|
+			gene	TP53
+			db_xref	GeneID:7157
+19089	18976	mRNA
+8218	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4806
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 12
+			transcript_id	ref|NM_001407268.1|
+			gene	TP53
+			db_xref	GeneID:7157
+19089	18976	misc_RNA
+8221	8120
+8002	7981
+7871	7593
+6835	6652
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 14
+			transcript_id	ref|NR_176326.1|
+			gene	TP53
+			db_xref	GeneID:7157
+19089	18976	mRNA
+8221	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 1
+			transcript_id	ref|NM_000546.6|
+			gene	TP53
+			tag	MANE Select
+			db_xref	Ensembl:ENST00000269305.9
+			db_xref	GeneID:7157
+19089	18976	mRNA
+8221	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 1
+			transcript_id	ref|NM_001276760.3|
+			gene	TP53
+			db_xref	GeneID:7157
+19089	18976	mRNA
+8221	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4865	4806
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 4
+			transcript_id	ref|NM_001276695.3|
+			gene	TP53
+			db_xref	GeneID:7157
+19089	18976	mRNA
+8221	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4865	4806
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 4
+			transcript_id	ref|NM_001126113.3|
+			gene	TP53
+			db_xref	GeneID:7157
+19089	18976	mRNA
+8221	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4806
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 3
+			transcript_id	ref|NM_001276696.3|
+			gene	TP53
+			db_xref	GeneID:7157
+19089	18976	mRNA
+8221	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4806
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 3
+			transcript_id	ref|NM_001126114.3|
+			gene	TP53
+			db_xref	GeneID:7157
+19089	18976	mRNA
+8221	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 8
+			transcript_id	ref|NM_001126118.2|
+			gene	TP53
+			db_xref	GeneID:7157
+19089	18976	mRNA
+9026	8924
+8221	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 9
+			transcript_id	ref|NM_001407262.1|
+			gene	TP53
+			db_xref	GeneID:7157
+19089	18976	mRNA
+9026	8924
+8221	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 9
+			transcript_id	ref|NM_001407263.1|
+			gene	TP53
+			db_xref	GeneID:7157
+9050	8924	mRNA
+8218	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 10
+			transcript_id	ref|NM_001407265.1|
+			gene	TP53
+			db_xref	GeneID:7157
+9050	8924	mRNA
+8218	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 10
+			transcript_id	ref|NM_001407264.1|
+			gene	TP53
+			db_xref	GeneID:7157
+9050	8924	mRNA
+8221	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 11
+			transcript_id	ref|NM_001407266.1|
+			gene	TP53
+			db_xref	GeneID:7157
+9050	8924	mRNA
+8221	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 11
+			transcript_id	ref|NM_001407267.1|
+			gene	TP53
+			db_xref	GeneID:7157
+9050	8924	mRNA
+8221	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4806
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 13
+			transcript_id	ref|NM_001407270.1|
+			gene	TP53
+			db_xref	GeneID:7157
+9050	8924	mRNA
+8221	8120
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4806
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 13
+			transcript_id	ref|NM_001407271.1|
+			gene	TP53
+			db_xref	GeneID:7157
+6843	6652	mRNA
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 5
+			transcript_id	ref|NM_001276697.3|
+			gene	TP53
+			db_xref	GeneID:7157
+6843	6652	mRNA
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 5
+			transcript_id	ref|NM_001126115.2|
+			gene	TP53
+			db_xref	GeneID:7157
+6843	6652	mRNA
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4865	4806
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 7
+			transcript_id	ref|NM_001276699.3|
+			gene	TP53
+			db_xref	GeneID:7157
+6843	6652	mRNA
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4865	4806
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 7
+			transcript_id	ref|NM_001126117.2|
+			gene	TP53
+			db_xref	GeneID:7157
+6843	6652	mRNA
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4806
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 6
+			transcript_id	ref|NM_001276698.3|
+			gene	TP53
+			db_xref	GeneID:7157
+6843	6652	mRNA
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4806
+2314	2208
+1289	20
+			product	tumor protein p53, transcript variant 6
+			transcript_id	ref|NM_001126116.2|
+			gene	TP53
+			db_xref	GeneID:7157
+8193	8120	CDS
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	1208
+			product	cellular tumor antigen p53 isoform a
+			protein_id	ref|NP_000537.3|
+			gene	TP53
+			note	isoform a is encoded by transcript variant 1
+			tag	MANE Select
+			db_xref	CCDS:CCDS11118.1
+			db_xref	Ensembl:ENSP00000269305.4
+			db_xref	GeneID:7157
+8193	8120	CDS
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	1208
+			product	cellular tumor antigen p53 isoform a
+			protein_id	ref|NP_001119584.1|
+			gene	TP53
+			note	isoform a is encoded by transcript variant 2
+			db_xref	CCDS:CCDS11118.1
+			db_xref	GeneID:7157
+8193	8120	CDS
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	1208
+			product	cellular tumor antigen p53 isoform a
+			protein_id	ref|NP_001394195.1|
+			gene	TP53
+			note	isoform a is encoded by transcript variant 11
+			db_xref	GeneID:7157
+8193	8120	CDS
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	1208
+			product	cellular tumor antigen p53 isoform a
+			protein_id	ref|NP_001394191.1|
+			gene	TP53
+			note	isoform a is encoded by transcript variant 9
+			db_xref	GeneID:7157
+8193	8120	CDS
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	1208
+			product	cellular tumor antigen p53 isoform a
+			protein_id	ref|NP_001394193.1|
+			gene	TP53
+			note	isoform a is encoded by transcript variant 10
+			db_xref	GeneID:7157
+7850	7593	CDS
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	1208
+			product	cellular tumor antigen p53 isoform g
+			protein_id	ref|NP_001394194.1|
+			gene	TP53
+			note	isoform g is encoded by transcript variant 10
+			db_xref	GeneID:7157
+7850	7593	CDS
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	1208
+			product	cellular tumor antigen p53 isoform g
+			protein_id	ref|NP_001394196.1|
+			gene	TP53
+			note	isoform g is encoded by transcript variant 11
+			db_xref	GeneID:7157
+7850	7593	CDS
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	1208
+			product	cellular tumor antigen p53 isoform g
+			protein_id	ref|NP_001394192.1|
+			gene	TP53
+			note	isoform g is encoded by transcript variant 9
+			db_xref	GeneID:7157
+7850	7593	CDS
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	1208
+			product	cellular tumor antigen p53 isoform g
+			protein_id	ref|NP_001119590.1|
+			gene	TP53
+			note	isoform g is encoded by transcript variant 8
+			db_xref	CCDS:CCDS73969.1
+			db_xref	GeneID:7157
+7850	7593	CDS
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	1208
+			product	cellular tumor antigen p53 isoform g
+			protein_id	ref|NP_001263689.1|
+			gene	TP53
+			note	isoform g is encoded by transcript variant 1
+			db_xref	CCDS:CCDS73969.1
+			db_xref	GeneID:7157
+7850	7593	CDS
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	1208
+			product	cellular tumor antigen p53 isoform g
+			protein_id	ref|NP_001263690.1|
+			gene	TP53
+			note	isoform g is encoded by transcript variant 2
+			db_xref	CCDS:CCDS73969.1
+			db_xref	GeneID:7157
+6814	6652	CDS
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	1208
+			product	cellular tumor antigen p53 isoform d
+			protein_id	ref|NP_001119587.1|
+			gene	TP53
+			note	isoform d is encoded by transcript variant 5
+			db_xref	CCDS:CCDS73966.1
+			db_xref	GeneID:7157
+6733	6652	CDS
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+2314	2208
+1289	1208
+			product	cellular tumor antigen p53 isoform j
+			protein_id	ref|NP_001263626.1|
+			gene	TP53
+			note	isoform j is encoded by transcript variant 5
+			db_xref	CCDS:CCDS73963.1
+			db_xref	GeneID:7157
+8193	8120	CDS
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4865	4818
+			product	cellular tumor antigen p53 isoform c
+			protein_id	ref|NP_001119585.1|
+			gene	TP53
+			note	isoform c is encoded by transcript variant 4
+			db_xref	CCDS:CCDS45605.1
+			db_xref	GeneID:7157
+7850	7593	CDS
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4865	4818
+			product	cellular tumor antigen p53 isoform h
+			protein_id	ref|NP_001263624.1|
+			gene	TP53
+			note	isoform h is encoded by transcript variant 4
+			db_xref	CCDS:CCDS73970.1
+			db_xref	GeneID:7157
+6814	6652	CDS
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4865	4818
+			product	cellular tumor antigen p53 isoform f
+			protein_id	ref|NP_001119589.1|
+			gene	TP53
+			note	isoform f is encoded by transcript variant 7
+			db_xref	CCDS:CCDS73967.1
+			db_xref	GeneID:7157
+6733	6652	CDS
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4865	4818
+			product	cellular tumor antigen p53 isoform l
+			protein_id	ref|NP_001263628.1|
+			gene	TP53
+			note	isoform l is encoded by transcript variant 7
+			db_xref	CCDS:CCDS73964.1
+			db_xref	GeneID:7157
+8193	8120	CDS
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4906
+			product	cellular tumor antigen p53 isoform b
+			protein_id	ref|NP_001119586.1|
+			gene	TP53
+			note	isoform b is encoded by transcript variant 3
+			db_xref	CCDS:CCDS45606.1
+			db_xref	GeneID:7157
+8193	8120	CDS
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4906
+			product	cellular tumor antigen p53 isoform b
+			protein_id	ref|NP_001394199.1|
+			gene	TP53
+			note	isoform b is encoded by transcript variant 13
+			db_xref	GeneID:7157
+8193	8120	CDS
+8002	7981
+7871	7593
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4906
+			product	cellular tumor antigen p53 isoform b
+			protein_id	ref|NP_001394197.1|
+			gene	TP53
+			note	isoform b is encoded by transcript variant 12
+			db_xref	GeneID:7157
+7850	7593	CDS
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4906
+			product	cellular tumor antigen p53 isoform i
+			protein_id	ref|NP_001394200.1|
+			gene	TP53
+			note	isoform i is encoded by transcript variant 13
+			db_xref	GeneID:7157
+7850	7593	CDS
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4906
+			product	cellular tumor antigen p53 isoform i
+			protein_id	ref|NP_001394198.1|
+			gene	TP53
+			note	isoform i is encoded by transcript variant 12
+			db_xref	GeneID:7157
+7850	7593	CDS
+6835	6652
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4906
+			product	cellular tumor antigen p53 isoform i
+			protein_id	ref|NP_001263625.1|
+			gene	TP53
+			note	isoform i is encoded by transcript variant 3
+			db_xref	CCDS:CCDS73971.1
+			db_xref	GeneID:7157
+6814	6652	CDS
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4906
+			product	cellular tumor antigen p53 isoform e
+			protein_id	ref|NP_001119588.1|
+			gene	TP53
+			note	isoform e is encoded by transcript variant 6
+			db_xref	CCDS:CCDS73968.1
+			db_xref	GeneID:7157
+6733	6652	CDS
+6570	6458
+5889	5780
+5436	5300
+5207	5134
+4938	4906
+			product	cellular tumor antigen p53 isoform k
+			protein_id	ref|NP_001263627.1|
+			gene	TP53
+			note	isoform k is encoded by transcript variant 6
+			db_xref	CCDS:CCDS73965.1
+			db_xref	GeneID:7157
+8568	9179	misc_feature
+			region	biological region
+			gene	-
+			SO_type	biological_region
+			standard_name	NANOG-H3K27ac-H3K4me1 hESC enhancer GRCh37_chr17:7580287-7580898
+			db_xref	GeneID:127885674
+8568	9179	regulatory
+			gene	-
+			note	NANOG-H3K27ac-H3K4me1 hESC enhancer chr17:7580287-7580898 (GRCh37/hg19 assembly coordinates)
+			experiment	EXISTENCE:reporter gene assay evidence [ECO:0000049][PMID:30033119]
+			function	activates a minimal SCP1, AML or CMV promoter by ChIP-STARR-seq in naive H9 embryonic stem cells {active_cell/tissue: H9 hESC(naive)}
+			regulatory_class	enhancer
+			db_xref	GeneID:127885674
+9180	9791	misc_feature
+			region	biological region
+			gene	-
+			SO_type	biological_region
+			standard_name	NANOG-H3K27ac-H3K4me1 hESC enhancer GRCh37_chr17:7580899-7581510
+			db_xref	GeneID:127885675
+9180	9791	regulatory
+			gene	-
+			note	NANOG-H3K27ac-H3K4me1 hESC enhancer chr17:7580899-7581510 (GRCh37/hg19 assembly coordinates)
+			experiment	EXISTENCE:reporter gene assay evidence [ECO:0000049][PMID:30033119]
+			function	activates a minimal SCP1, AML or CMV promoter by ChIP-STARR-seq in naive and primed H9 embryonic stem cells {active_cell/tissue: H9 hESC(naive and primed)}
+			regulatory_class	enhancer
+			db_xref	GeneID:127885675
+9792	10402	misc_feature
+			region	biological region
+			gene	-
+			SO_type	biological_region
+			standard_name	H3K27ac hESC enhancer GRCh37_chr17:7581511-7582121
+			db_xref	GeneID:127885676
+9792	10402	regulatory
+			gene	-
+			note	H3K27ac hESC enhancer chr17:7581511-7582121 (GRCh37/hg19 assembly coordinates)
+			experiment	EXISTENCE:reporter gene assay evidence [ECO:0000049][PMID:30033119]
+			function	activates a minimal SCP1, AML or CMV promoter by ChIP-STARR-seq in primed H9 embryonic stem cells {active_cell/tissue: H9 hESC(primed)}
+			regulatory_class	enhancer
+			db_xref	GeneID:127885676
+17450	17509	misc_feature
+			region	biological region
+			gene	-
+			SO_type	biological_region
+			standard_name	ATAC-STARR-seq lymphoblastoid silent region 8136
+			db_xref	GeneID:130060171
+17450	17509	regulatory
+			gene	-
+			note	silent region_8136
+			experiment	EXISTENCE:reporter gene assay evidence [ECO:0000049][PMID:35858748]
+			function	represses an Ori minimal core promoter by ATAC-STARR-seq in GM12878 lymphoblastoid cells {active_cell/tissue: GM12878}
+			regulatory_class	silencer
+			db_xref	GeneID:130060171
+17670	>19149	gene
+			gene	WRAP53
+			gene_syn	DKCB3
+			gene_syn	TCAB1
+			gene_syn	WDR79
+			gene_desc	WD repeat containing antisense to TP53
+			db_xref	GeneID:55135
+			db_xref	HGNC:HGNC:25522
+			db_xref	MIM:612661
+17670	>17823	mRNA
+			product	WD repeat containing antisense to TP53, transcript variant 2
+			transcript_id	ref|NM_001143990.2|
+			gene	WRAP53
+			db_xref	GeneID:55135
+17810	17939	misc_feature
+			region	biological region
+			gene	-
+			SO_type	biological_region
+			standard_name	ATAC-STARR-seq lymphoblastoid active region 11641
+			db_xref	GeneID:130060172
+17810	17939	regulatory
+			gene	-
+			note	active region_11641
+			experiment	EXISTENCE:reporter gene assay evidence [ECO:0000049][PMID:35858748]
+			function	activates an Ori minimal core promoter by ATAC-STARR-seq in GM12878 lymphoblastoid cells {active_cell/tissue: GM12878}
+			regulatory_class	enhancer
+			db_xref	GeneID:130060172
+17959	>19149	misc_feature
+			region	biological region
+			gene	-
+			SO_type	biological_region
+			standard_name	BRD4-independent group 4 enhancer GRCh37_chr17:7589699-7590898
+			db_xref	GeneID:126862483
+17959	18506	regulatory
+			gene	-
+			note	NANOG-H3K27ac-H3K4me1 hESC enhancer chr17:7589678-7590225 (GRCh37/hg19 assembly coordinates)
+			experiment	EXISTENCE:reporter gene assay evidence [ECO:0000049][PMID:30033119]
+			function	activates a minimal SCP1, AML or CMV promoter by ChIP-STARR-seq in primed H9 embryonic stem cells {active_cell/tissue: H9 hESC(primed)}
+			regulatory_class	enhancer
+			db_xref	GeneID:126862483
+17970	18019	regulatory
+			gene	-
+			note	active region_11642
+			experiment	EXISTENCE:reporter gene assay evidence [ECO:0000049][PMID:35858748]
+			function	activates an Ori minimal core promoter by ATAC-STARR-seq in GM12878 lymphoblastoid cells {active_cell/tissue: GM12878}
+			regulatory_class	enhancer
+			db_xref	GeneID:126862483
+17980	>19149	regulatory
+			gene	-
+			note	BRD4-independent group 4 enhancer chr17:7589699-7590898 (GRCh37/hg19 assembly coordinates)
+			experiment	EXISTENCE:reporter gene assay evidence [ECO:0000049][PMID:35650434]
+			function	activates an origin of replication core promoter dependent on BRD2, P300/CBP, MED14 and CDK7 cofactors, and independent of BRD4, by STARR-seq in HCT116 cells {active_cell/tissue: HCT116}
+			regulatory_class	enhancer
+			db_xref	GeneID:126862483
+19028	>19149	mRNA
+			product	WD repeat containing antisense to TP53, transcript variant 3
+			transcript_id	ref|NM_001143991.2|
+			gene	WRAP53
+			db_xref	GeneID:55135
+

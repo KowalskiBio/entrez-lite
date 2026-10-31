@@ -106,11 +106,14 @@ async function esearch(db, term, { retstart = 0, retmax = 20, sort } = {}) {
   };
 }
 
-async function esummary(db, ids) {
-  if (!ids.length) return [];
-  const data = await eutilsRequest('esummary.fcgi', { db, id: ids.join(',') });
+function summaryDocs(data) {
   const result = data.result || {};
   return (result.uids || []).map((uid) => result[uid]).filter((d) => d && !d.error);
+}
+
+async function esummary(db, ids) {
+  if (!ids.length) return [];
+  return summaryDocs(await eutilsRequest('esummary.fcgi', { db, id: ids.join(',') }));
 }
 
 function efetch(db, ids, rettype, extra = {}) {
@@ -133,6 +136,88 @@ async function elinkNeighbor(dbfrom, id, linkname) {
   const data = await eutilsRequest('elink.fcgi', { dbfrom, id, linkname, cmd: 'neighbor' });
   const set = (data.linksets?.[0]?.linksetdbs || []).find((s) => s.linkname === linkname);
   return { dbto: set?.dbto || linkname.split('_')[1], ids: set?.links || [] };
+}
+
+// --- Large result sets -------------------------------------------------------
+
+// A search saved on NCBI's history server. esearch will not page past 10,000 IDs,
+// but efetch and esummary read a saved search in batches with no such ceiling.
+async function esearchHistory(db, term, { sort } = {}) {
+  const data = await eutilsRequest('esearch.fcgi', { db, term, sort, usehistory: 'y', retmax: 0 });
+  const r = data.esearchresult || {};
+  return { count: Number(r.count || 0), webenv: r.webenv || '', key: r.querykey || '' };
+}
+
+// A record source is either { ids } or a saved search { webenv, key, count }.
+const sourceSize = (source) => (source.ids ? source.ids.length : source.count);
+
+function batchParams(source, start, size) {
+  return source.ids
+    ? { id: source.ids.slice(start, start + size).join(',') }
+    : { WebEnv: source.webenv, query_key: source.key, retstart: start, retmax: size };
+}
+
+// Batches run one after another through the shared throttle. onProgress(done, total)
+// runs after each batch and may throw to stop before the next one.
+async function inBatches(source, batch, onProgress, fetchOne) {
+  const total = sourceSize(source);
+  const out = [];
+  for (let start = 0; start < total; start += batch) {
+    const size = Math.min(batch, total - start);
+    out.push(await fetchOne(batchParams(source, start, size)));
+    onProgress?.(start + size, total);
+  }
+  return out;
+}
+
+async function efetchAll(db, source, rettype, { batch = 500, onProgress } = {}) {
+  const parts = await inBatches(source, batch, onProgress, (p) =>
+    eutilsRequest('efetch.fcgi', { db, rettype, retmode: 'text', ...p }, { json: false }));
+  // Abstracts and MEDLINE records are separated by a blank line, so keep one between batches.
+  const gap = rettype === 'abstract' || rettype === 'medline' ? '\n' : '';
+  return parts.map((t) => t.replace(/\s*$/, '\n')).join(gap);
+}
+
+async function esummaryAll(db, source, { batch = 200, onProgress } = {}) {
+  const parts = await inBatches(source, batch, onProgress, async (p) =>
+    summaryDocs(await eutilsRequest('esummary.fcgi', { db, ...p })));
+  return parts.flat();
+}
+
+// --- Query helpers -----------------------------------------------------------
+
+// Accessions such as HQ288918.1, NZ_CP027720.1, WP_047306321.1, PRJNA224116,
+// SAMN02604091 and SRR390728.
+const ACCESSION_RE = /^([A-Z]{1,2}_?[A-Z0-9]*\d{5,}(\.\d+)?|[A-Z]{1,4}\d{5,8}(\.\d+)?)$/;
+
+// A pasted list of identifiers as one query: accessions match on [accn] and bare
+// numbers (PMIDs, Gene IDs, UIDs) on [uid]. Returns null unless the text is two or
+// more identifiers and nothing else, so ordinary searches are left alone.
+function idListTerm(text) {
+  const tokens = String(text).split(/[\s,;]+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+  const clauses = new Set();
+  for (const token of tokens) {
+    const t = token.toUpperCase();
+    const field = /^\d+$/.test(t) ? 'uid' : ACCESSION_RE.test(t) ? 'accn' : null;
+    if (!field) return null;
+    clauses.add(`${t}[${field}]`);
+  }
+  return { count: clauses.size, term: [...clauses].join(' OR ') };
+}
+
+// "#3 AND #5" names searches in the history list. NCBI resolves these against a
+// server session that expires within hours, so they are expanded here into the
+// saved queries instead, which keeps them working on any later visit.
+function expandHistoryRefs(term, items, db, label = (d) => d) {
+  return String(term).replace(/#(\d+)\b/g, (_, n) => {
+    const item = items.find((i) => i.n === Number(n));
+    if (!item) throw new EutilsError(`There is no search #${n} in your history.`);
+    if (item.db !== db) {
+      throw new EutilsError(`Search #${n} was in ${label(item.db)}, so it can't be combined with a ${label(db)} search.`);
+    }
+    return `(${item.query})`;
+  });
 }
 
 // --- Conserved domains -------------------------------------------------------
