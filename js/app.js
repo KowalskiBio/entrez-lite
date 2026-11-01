@@ -103,7 +103,7 @@ const FILTERS = {
   nuccore: ['org', 'gene', 'mol', 'src', 'len'],
   protein: ['org', 'gene', 'src', 'len'],
   gene: ['org', 'alive'],
-  structure: ['org', 'expm', 'reso', 'lig', 'ec'],
+  structure: ['org', 'expm', 'reso', 'lig'],
   ipg: ['org', 'len', 'pcount'],
   protfam: ['sym', 'meth', 'ec'],
   pubmed: ['date', 'free'],
@@ -130,7 +130,7 @@ function buildTerm(db, term, f) {
   if (has('expm') && f.expm) clauses.push(`"${f.expm}"[EXPM]`);
   if (has('reso') && f.reso) clauses.push(`0:${f.reso}[RESO]`);
   if (has('lig') && f.lig) clauses.push(`${f.lig}[LCOD]`);
-  if (has('ec') && f.ec) clauses.push(`${f.ec}[${db === 'structure' ? 'ECNO' : 'EC'}]`);
+  if (has('ec') && f.ec) clauses.push(`${f.ec}[EC]`);
   if (has('pcount') && f.pcount) clauses.push(`${f.pcount}:100000000[ProtCount]`);
   if (has('sym') && f.sym) clauses.push(`${f.sym}[GS]`);
   if (has('meth') && f.meth) clauses.push(`${f.meth}[METH]`);
