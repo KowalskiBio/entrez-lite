@@ -1380,6 +1380,8 @@ function getAnnotation(acc, onProgress) {
 
 const GENE_ROWS_SHOWN = 300;
 
+const annotatedGeneCount = (r) => Number(r.annotation_info?.stats?.gene_counts?.total) || 0;
+
 async function loadGeneContent(genomes, token) {
   const box = $('#gene-content');
   const status = (html) => { box.innerHTML = `<div class="card-head"><h3>Gene content</h3></div>${html}`; };
@@ -1387,6 +1389,9 @@ async function loadGeneContent(genomes, token) {
   try {
     for (const [i, g] of genomes.entries()) {
       status(loadingHtml(`Reading genes of ${g.acc} (${i + 1} of ${genomes.length})`));
+      // The dataset report says whether there are genes at all; an unannotated
+      // assembly needs no annotation report requests.
+      if (!annotatedGeneCount(g.r)) { lists.push([]); continue; }
       lists.push(await getAnnotation(g.acc, (done, total) => {
         if (token === routeToken && done < total) status(loadingHtml(`Reading genes of ${g.acc} (${i + 1} of ${genomes.length}): ${fmtN(done)} of ${fmtN(total)}`));
       }));
@@ -1405,7 +1410,10 @@ function renderGeneContent(box, genomes, lists) {
   const n = genomes.length;
   const types = [...new Set(lists.flatMap((genes) => genes.map((g) => g.type)))].sort();
   const typeCounts = lists.map((genes) => genes.reduce((m, g) => m.set(g.type, (m.get(g.type) || 0) + 1), new Map()));
-  const empty = genomes.filter((_, i) => !lists[i].length).map((g) => g.acc);
+  const blank = genomes.filter((_, i) => !lists[i].length);
+  // Annotated per the dataset report, yet the annotation report has no rows.
+  const unserved = blank.filter((g) => annotatedGeneCount(g.r));
+  const unannotated = blank.filter((g) => !annotatedGeneCount(g.r)).map((g) => g.acc);
   const notWp = genomes.filter((_, i) => {
     const prots = lists[i].filter((g) => g.protein);
     return prots.length && prots.filter((g) => g.protein.startsWith('WP_')).length / prots.length < 0.5;
@@ -1413,13 +1421,14 @@ function renderGeneContent(box, genomes, lists) {
 
   box.innerHTML = `
     <div class="card-head"><h3>Gene content</h3></div>
-    ${empty.length ? `<div class="notice">${esc(empty.join(', '))} ${empty.length === 1 ? 'has' : 'have'} no gene annotation in NCBI Datasets${empty.some((a) => a.startsWith('GCA')) ? '; the RefSeq (GCF_) copy is often annotated' : ''}.</div>` : ''}
+    ${unannotated.length ? `<div class="notice">${esc(unannotated.join(', '))} ${unannotated.length === 1 ? 'has' : 'have'} no gene annotation in NCBI Datasets${unannotated.some((a) => a.startsWith('GCA')) ? '; the RefSeq (GCF_) copy is often annotated' : ''}.</div>` : ''}
+    ${unserved.map((g) => `<div class="notice">${esc(g.acc)} is annotated (${fmtN(annotatedGeneCount(g.r))} genes${g.r.annotation_info?.provider ? ` by ${esc(g.r.annotation_info.provider)}` : ''}), but NCBI Datasets does not serve its gene list, so its column is empty.</div>`).join('')}
     <div class="table-wrap"><table class="compare-table">
       <thead>${compareHeadHtml(genomes, { removable: false })}</thead>
       <tbody>
         <tr class="group"><th colspan="${n + 1}">Genes by type</th></tr>
         ${types.map((t) => `<tr><th>${esc(humanize(t))}</th>${typeCounts.map((m) => `<td class="num">${m.has(t) ? fmtN(m.get(t)) : '<span class="muted">—</span>'}</td>`).join('')}</tr>`).join('')}
-        <tr><th>All genes</th>${lists.map((g) => `<td class="num"><b>${fmtN(g.length)}</b></td>`).join('')}</tr>
+        <tr><th>All genes</th>${lists.map((g) => `<td class="num">${g.length ? `<b>${fmtN(g.length)}</b>` : '<span class="muted">—</span>'}</td>`).join('')}</tr>
       </tbody>
       <tbody id="gene-summary"></tbody>
     </table></div>
