@@ -27,6 +27,7 @@ const DATABASES = [
   { id: 'structure', label: 'Structure' },
   { id: 'cdd', label: 'Conserved Domains' },
   { id: 'ipg', label: 'Identical Protein Groups' },
+  { id: 'protfam', label: 'Protein Family Models' },
   { id: 'gds', label: 'GEO DataSets' },
   { id: 'clinvar', label: 'ClinVar' },
   { id: 'mesh', label: 'MeSH' },
@@ -229,8 +230,64 @@ function summarize(db, d) {
       return { id: uid, title: d.project_title, meta: [d.project_acc, d.organism_name, d.project_data_type] };
     case 'biosample':
       return { id: uid, title: d.title, meta: [d.accession, d.organism, d.date] };
-    case 'structure':
-      return { id: uid, title: d.pdbdescr, meta: [d.pdbacc, d.expmethod, d.pdbdepositdate] };
+    // These four are looked up by UID: E-utilities rejects their accessions.
+    case 'structure': {
+      const mols = [d.proteinmoleculecount && `${d.proteinmoleculecount} protein`, d.dnamoleculecount && `${d.dnamoleculecount} DNA`,
+        d.rnamoleculecount && `${d.rnamoleculecount} RNA`].filter(Boolean).join(' + ');
+      return {
+        id: uid,
+        title: d.pdbdescr,
+        meta: [
+          d.pdbacc,
+          d.expmethod,
+          d.resolution ? `${d.resolution} Å` : '',
+          d.pdbclass,
+          (d.organismlist || []).join(', '),
+          mols,
+          d.ligcount && d.ligcount !== '0' ? `${d.ligcount} ligand${d.ligcount === '1' ? '' : 's'}` : '',
+          d.pdbdepositdate ? `deposited ${d.pdbdepositdate.slice(0, 10)}` : '',
+        ],
+        badges: [d.ec ? `EC ${d.ec}` : ''],
+      };
+    }
+    case 'cdd':
+      return {
+        id: uid,
+        title: `${d.accession} · ${d.title}`,
+        meta: [d.subtitle, d.database, d.organism && d.organism !== 'cellular organisms' ? d.organism : '',
+          d.pssmlength ? `${d.pssmlength} aa model` : '', d.pubdate ? `published ${d.pubdate.slice(0, 10)}` : ''],
+        snippet: d.abstract,
+        badges: [/^cl/.test(d.accession) ? 'Superfamily' : '', d.structurerepresentative ? 'Has structure' : ''],
+      };
+    case 'ipg': {
+      const count = (n, one, many) => (Number(n) ? `${fmtN(n)} ${Number(n) === 1 ? one : many}` : '');
+      return {
+        id: uid,
+        title: d.title,
+        meta: [
+          d.accession,
+          count(d.proteincount, 'protein', 'proteins'),
+          d.slen ? `${fmtN(d.slen)} aa` : '',
+          d.organism,
+          count(d.speciescount, 'species', 'species'),
+          count(d.assemblycount, 'assembly', 'assemblies'),
+          d.div,
+          d.modificationdate ? `updated ${d.modificationdate.slice(0, 10)}` : '',
+        ],
+        badges: [/^WP_/.test(d.accession) ? 'RefSeq non-redundant' : ''],
+      };
+    }
+    case 'protfam': {
+      const first = (v) => (Array.isArray(v) ? v.join(', ') : v || '');
+      return {
+        id: uid,
+        title: first(d.dispproductname) || d.dispfamilyacc,
+        meta: [d.dispfamilyacc, first(d.dispgenesymbol) && `gene ${first(d.dispgenesymbol)}`, d.dispmethod, d.dispreviewlevel,
+          d.disppubdate ? `updated ${d.disppubdate.slice(0, 10)}` : ''],
+        snippet: first(d.dispdescription),
+        badges: [(d.dispgotermlist || []).length ? 'GO terms' : ''],
+      };
+    }
     default:
       return {
         id: uid,
@@ -786,7 +843,15 @@ async function renderRecord(db, id, params, token) {
   const defaultTab = isMaster ? 'contigs' : isSeq ? (shownLen > BIG_RECORD ? 'features' : 'genbank') : 'summary';
   let tab = tabs.some(([t]) => t === params.get('tab')) ? params.get('tab') : defaultTab;
 
-  const ncbiUrl = `https://www.ncbi.nlm.nih.gov/${db}/${encodeURIComponent(s.id)}`;
+  const ncbiUrl = {
+    structure: `https://www.ncbi.nlm.nih.gov/Structure/pdb/${encodeURIComponent(doc.pdbacc || '')}`,
+    cdd: `https://www.ncbi.nlm.nih.gov/Structure/cdd/${encodeURIComponent(doc.accession || '')}`,
+    protfam: `https://www.ncbi.nlm.nih.gov/protfam/?term=${encodeURIComponent(doc.dispfamilyacc || '')}`,
+  }[db] || `https://www.ncbi.nlm.nih.gov/${db}/${encodeURIComponent(s.id)}`;
+  const extraLinks = {
+    structure: doc.pdbacc ? [[`RCSB PDB ${doc.pdbacc}`, `https://www.rcsb.org/structure/${encodeURIComponent(doc.pdbacc)}`]] : [],
+    ipg: doc.accession ? [['Open in Identical Protein Groups', `https://www.ncbi.nlm.nih.gov/ipg/?term=${encodeURIComponent(doc.accession)}`]] : [],
+  }[db] || [];
   const blastProgram = db === 'protein' ? 'blastp' : 'blastn';
 
   main.innerHTML = `
@@ -818,6 +883,7 @@ async function renderRecord(db, id, params, token) {
             <ul class="link-list compact">
               ${isSeq ? `<li><a href="https://blast.ncbi.nlm.nih.gov/Blast.cgi?PROGRAM=${blastProgram}&PAGE_TYPE=BlastSearch&QUERY=${encodeURIComponent(s.id)}" target="_blank" rel="noopener">Run BLAST ↗</a></li>` : ''}
               <li><a href="${ncbiUrl}" target="_blank" rel="noopener">Open on NCBI ↗</a></li>
+              ${extraLinks.map(([l, u]) => `<li><a href="${esc(u)}" target="_blank" rel="noopener">${esc(l)} ↗</a></li>`).join('')}
             </ul>
           </div>
           ${db === 'nuccore' || db === 'assembly' ? `<div class="card" id="genome-card"><h3>Genome</h3>${loadingHtml('Finding assembly')}</div>` : ''}
@@ -1887,6 +1953,86 @@ async function renderTab(db, id, doc, tab, region, hasRegion, shownLen, token) {
   }
 }
 
+// A readable fact sheet for the protein-side databases, whose raw esummary fields
+// (ligcode, speciescount, dispmethod…) mean little on their own.
+function proteinFactsHtml(db, doc) {
+  const list = (v) => (Array.isArray(v) ? v.join(', ') : v || '');
+  const date = (v) => String(v || '').slice(0, 10);
+  const n = (v) => (v !== '' && v != null && !Number.isNaN(Number(v)) ? fmtN(v) : '');
+  const seqLink = (acc, db2 = 'protein') => (acc ? `<a class="mono" href="#/record/${db2}/${encodeURIComponent(acc)}">${esc(acc)}</a>` : '');
+  let intro = '';
+  let rows;
+  if (db === 'structure') {
+    const mols = [['protein', doc.proteinmoleculecount], ['DNA', doc.dnamoleculecount], ['RNA', doc.rnamoleculecount], ['other', doc.othermoleculecount]]
+      .filter(([, c]) => Number(c)).map(([t, c]) => `${c} ${t}`).join(', ');
+    const ligands = String(doc.ligcode || '').split('|').filter(Boolean);
+    rows = [
+      ['PDB ID', `<a href="https://www.rcsb.org/structure/${esc(doc.pdbacc)}" target="_blank" rel="noopener">${esc(doc.pdbacc)} ↗</a>`],
+      ['Method', esc(doc.expmethod)],
+      ['Resolution', doc.resolution ? `${esc(doc.resolution)} Å` : ''],
+      ['Classification', esc(doc.pdbclass)],
+      ['Organism', esc(list(doc.organismlist))],
+      ['EC number', esc(doc.ec)],
+      ['Molecules', esc(mols)],
+      ['Modified residues', esc([['protein', doc.modproteinrescount], ['DNA', doc.moddnarescount], ['RNA', doc.modrnarescount]]
+        .filter(([, c]) => Number(c)).map(([t, c]) => `${c} ${t}`).join(', '))],
+      ['Ligands', ligands.length ? `${ligands.map((l) => `<a href="https://www.rcsb.org/ligand/${esc(l)}" target="_blank" rel="noopener">${esc(l)}</a>`).join(' ')} <span class="muted">(${ligands.length} distinct${Number(doc.ligcount) > ligands.length ? `, ${esc(doc.ligcount)} in all` : ''})</span>` : ''],
+      ['Deposited', date(doc.pdbdepositdate)],
+      ['In MMDB', date(doc.mmdbentrydate)],
+      ['Last modified', date(doc.mmdbmodifydate)],
+      ['Other IDs', esc(list(doc.pdbaccsynlist))],
+    ];
+  } else if (db === 'cdd') {
+    intro = doc.abstract ? `<p class="prose">${esc(doc.abstract)}</p>` : '';
+    rows = [
+      ['Accession', esc(doc.accession)],
+      ['Name', esc(doc.title)],
+      ['Description', esc(doc.subtitle)],
+      ['Type', /^cl/.test(doc.accession) ? 'Superfamily (a cluster of related domain models)' : 'Domain model'],
+      ['Source', esc(doc.database)],
+      ['Organism', esc(doc.organism)],
+      ['Model length', doc.pssmlength ? `${esc(doc.pssmlength)} aa` : ''],
+      ['Functional sites', n(doc.numbersites) && esc(n(doc.numbersites))],
+      ['Site descriptions', esc(list(doc.sitedescriptions))],
+      ['Published', date(doc.pubdate)],
+      ['Added to Entrez', date(doc.entrezdate)],
+    ];
+  } else if (db === 'ipg') {
+    rows = [
+      ['Representative', seqLink(doc.accession)],
+      ['Product', esc(doc.title)],
+      ['Length', doc.slen ? `${fmtN(doc.slen)} aa` : ''],
+      ['Organism', esc(doc.organism)],
+      ['Taxonomic group', esc([doc.blastname, doc.div].filter(Boolean).join(' · '))],
+      ['Proteins in group', n(doc.proteincount)],
+      ['Records (rows)', n(doc.rowcount)],
+      ['Assemblies', n(doc.assemblycount)],
+      ['Species', n(doc.speciescount)],
+      ['Genera', n(doc.generacount)],
+      ['Taxa', n(doc.taxidcount)],
+      ['Kingdoms', n(doc.kingdomcount)],
+      ['Genomes', n(doc.genomecount)],
+      ['Group updated', date(doc.modificationdate)],
+    ];
+  } else if (db === 'protfam') {
+    intro = doc.dispdescription?.length ? `<p class="prose">${esc(list(doc.dispdescription))}</p>` : '';
+    const go = (doc.dispgotermlist || []).map((t) => (typeof t === 'object' ? Object.values(t).filter((x) => typeof x !== 'object').join(' ') : t));
+    rows = [
+      ['Family accession', esc(doc.dispfamilyacc)],
+      ['Product name', esc(list(doc.dispproductname))],
+      ['Gene symbol', esc(list(doc.dispgenesymbol))],
+      ['Method', esc(doc.dispmethod)],
+      ['Review level', esc(doc.dispreviewlevel)],
+      ['GO terms', esc(go.join('; '))],
+      ['Updated', date(doc.disppubdate)],
+    ];
+  } else {
+    return '';
+  }
+  const body = rows.filter(([, v]) => v).map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('');
+  return `${intro}<h3>Details</h3><table class="kv">${body}</table>`;
+}
+
 function summaryTabHtml(db, doc) {
   let extra = '';
   if (db === 'gene') {
@@ -1901,6 +2047,8 @@ function summaryTabHtml(db, doc) {
         return `<li><a href="${href}">${esc(g.chraccver)} : ${fmtN(from)}–${fmtN(to)} (${minus ? 'minus' : 'plus'} strand), get sequence</a></li>`;
       }).join('')}</ul>` : ''}`;
   }
+  const facts = proteinFactsHtml(db, doc);
+  if (facts) return `${extra}${facts}`;
   const rows = Object.entries(doc)
     .filter(([k, v]) => !['uid', 'summary', 'genomicinfo', 'locationhist'].includes(k) && v !== '' && v !== null && !(Array.isArray(v) && !v.length))
     .map(([k, v]) => {
