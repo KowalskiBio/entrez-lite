@@ -103,6 +103,9 @@ const FILTERS = {
   nuccore: ['org', 'gene', 'mol', 'src', 'len'],
   protein: ['org', 'gene', 'src', 'len'],
   gene: ['org', 'alive'],
+  structure: ['org', 'expm', 'reso', 'lig', 'ec'],
+  ipg: ['org', 'len', 'pcount'],
+  protfam: ['sym', 'meth', 'ec'],
   pubmed: ['date', 'free'],
   pmc: ['date'],
   default: ['org'],
@@ -124,6 +127,13 @@ function buildTerm(db, term, f) {
   if (has('mol') && f.mol) clauses.push(`biomol_${f.mol}[PROP]`);
   if (has('src') && f.src) clauses.push(`${f.src}[filter]`);
   if (has('len') && (f.min || f.max)) clauses.push(`${f.min || 1}:${f.max || 999999999}[SLEN]`);
+  if (has('expm') && f.expm) clauses.push(`"${f.expm}"[EXPM]`);
+  if (has('reso') && f.reso) clauses.push(`0:${f.reso}[RESO]`);
+  if (has('lig') && f.lig) clauses.push(`${f.lig}[LCOD]`);
+  if (has('ec') && f.ec) clauses.push(`${f.ec}[${db === 'structure' ? 'ECNO' : 'EC'}]`);
+  if (has('pcount') && f.pcount) clauses.push(`${f.pcount}:100000000[ProtCount]`);
+  if (has('sym') && f.sym) clauses.push(`${f.sym}[GS]`);
+  if (has('meth') && f.meth) clauses.push(`${f.meth}[METH]`);
   if (has('alive') && f.alive) clauses.push('alive[prop]');
   if (has('date') && (f.from || f.to)) clauses.push(`${f.from || 1800}:${f.to || 3000}[dp]`);
   if (has('free') && f.free) clauses.push('free full text[sb]');
@@ -150,6 +160,17 @@ function filtersFormHtml(db, f) {
         <input name="min" type="number" min="1" value="${esc(f.min)}" placeholder="min">
         <input name="max" type="number" min="1" value="${esc(f.max)}" placeholder="max">
       </div></fieldset>`)}
+      ${field('expm', `<label>Experimental method<select name="expm">
+        ${opt('', 'All', f.expm || '')}${opt('X-ray diffraction', 'X-ray diffraction', f.expm)}${opt('Solution NMR', 'NMR', f.expm)}${opt('Electron microscopy', 'Electron microscopy', f.expm)}
+      </select></label>`)}
+      ${field('reso', `<label>Resolution, at best (Å)<input name="reso" type="number" step="0.1" min="0.1" value="${esc(f.reso)}" placeholder="e.g. 2.0"></label>`)}
+      ${field('lig', `<label>Ligand code<input name="lig" value="${esc(f.lig)}" placeholder="e.g. HEM"></label>`)}
+      ${field('ec', `<label>EC number<input name="ec" value="${esc(f.ec)}" placeholder="e.g. 1.7.2.1"></label>`)}
+      ${field('pcount', `<label>Proteins in group, at least<input name="pcount" type="number" min="1" value="${esc(f.pcount)}" placeholder="e.g. 100"></label>`)}
+      ${field('sym', `<label>Gene symbol<input name="sym" value="${esc(f.sym)}" placeholder="e.g. nirK"></label>`)}
+      ${field('meth', `<label>Model type<select name="meth">
+        ${opt('', 'All', f.meth || '')}${opt('HMM', 'HMM', f.meth)}${opt('BlastRule', 'BlastRule', f.meth)}
+      </select></label>`)}
       ${field('alive', `<label class="check"><input type="checkbox" name="alive" value="1"${f.alive ? ' checked' : ''}> Current records only</label>`)}
       ${field('date', `<fieldset><legend>Publication year</legend><div class="row2">
         <input name="from" type="number" value="${esc(f.from)}" placeholder="from">
