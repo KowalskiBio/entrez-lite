@@ -304,6 +304,7 @@ function route() {
   if (parts[0] === 'record' && parts[1] && parts[2]) return renderRecord(parts[1], parts[2], params, token);
   if (parts[0] === 'links' && parts[3]) return renderLinks(parts[1], parts[2], parts[3], params, token);
   if (parts[0] === 'genome' && parts[1]) return renderGenome(parts[1], token);
+  if (parts[0] === 'compare') return renderCompare(params, token);
   if (parts[0] === 'history') return renderHistory();
   return renderHome();
 }
@@ -1083,6 +1084,13 @@ async function renderGenome(acc, token) {
               <li><a href="${datasetsPageUrl(acc)}" target="_blank" rel="noopener">Open in NCBI Datasets ↗</a></li>
             </ul>
           </div>
+          <form class="card" id="compare-form">
+            <h3>Compare this genome</h3>
+            <textarea name="with" rows="2" placeholder="GCF_…, GCA_… or NC_… accessions" aria-label="Genomes to compare with" required></textarea>
+            <div class="btn-row"><button class="btn small primary">Compare</button></div>
+            <p class="muted small">Up to ${MAX_COMPARE - 1} assembly or sequence accessions. Sequencing, size, contigs, quality and gene content side by side.</p>
+            ${ani?.best_ani_match && ani.best_ani_match.assembly !== acc ? `<a class="small" href="${compareHref([acc, ani.best_ani_match.assembly])}">Compare with the best type match, ${esc(ani.best_ani_match.assembly)}</a>` : ''}
+          </form>
           <div class="card">
             <h3>Related information</h3>
             <ul class="link-list compact">
@@ -1096,7 +1104,426 @@ async function renderGenome(acc, token) {
       </div>
     </article>`;
 
+  $('#compare-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const others = parseAccessionList(new FormData(e.target).get('with'));
+    if (others.length) location.hash = compareHref([acc, ...others]);
+  });
   loadGenomeSequences(acc, '', token);
+}
+
+// --- Compare genomes -----------------------------------------------------------
+
+const MAX_COMPARE = 6;
+const compareHref = (accs) => hashFor('/compare', { ids: accs.join(',') });
+
+const strainOf = (r) => r.organism?.infraspecific_names?.strain || r.organism?.infraspecific_names?.isolate || '';
+const sourceLabel = (acc) => (String(acc).startsWith('GCF') ? 'RefSeq' : 'GenBank');
+const numOrNull = (v) => (v === undefined || v === null || v === '' || Number.isNaN(Number(v)) ? null : Number(v));
+
+// Rows of the overview table. `get` returns the value compared between genomes,
+// `fmt` how it is shown; numeric rows also show the difference from the first genome.
+const COMPARE_ROWS = [
+  ['Identity', [
+    { label: 'Organism', get: (r) => r.organism?.organism_name, fmt: (v) => `<i>${esc(v)}</i>` },
+    { label: 'Strain / isolate', get: strainOf },
+    { label: 'Tax ID', get: (r) => r.organism?.tax_id, fmt: (v) => `<a href="#/record/taxonomy/${esc(v)}">${esc(v)}</a>` },
+    { label: 'Type material', get: (r) => (r.type_material ? 'yes' : 'no') },
+    { label: 'BioProject', get: (r) => r.assembly_info?.bioproject_accession, fmt: (v) => `<a href="${hashFor('/search', { db: 'bioproject', term: v })}">${esc(v)}</a>` },
+    { label: 'BioSample', get: (r) => r.assembly_info?.biosample?.accession, fmt: (v) => `<a href="${hashFor('/search', { db: 'biosample', term: v })}">${esc(v)}</a>` },
+  ]],
+  ['Assembly', [
+    { label: 'Source', get: (r) => sourceLabel(r.accession) },
+    { label: 'Assembly name', get: (r) => r.assembly_info?.assembly_name },
+    { label: 'Level', get: (r) => r.assembly_info?.assembly_level },
+    { label: 'Status', get: (r) => r.assembly_info?.assembly_status },
+    { label: 'RefSeq category', get: (r) => r.assembly_info?.refseq_category },
+    { label: 'Released', get: (r) => r.assembly_info?.release_date },
+    { label: 'Submitter', get: (r) => r.assembly_info?.submitter },
+  ]],
+  ['Sequencing', [
+    { label: 'Technology', get: (r) => r.assembly_info?.sequencing_tech },
+    { label: 'Assembler', get: (r) => r.assembly_info?.assembly_method },
+    { label: 'Coverage', get: (r) => numOrNull(String(r.assembly_stats?.genome_coverage ?? '').replace(/x$/i, '')), num: true, unit: '×', digits: 1 },
+  ]],
+  ['Statistics', [
+    { label: 'Total length', get: (r) => numOrNull(r.assembly_stats?.total_sequence_length), num: true, unit: ' bp' },
+    { label: 'Ungapped length', get: (r) => numOrNull(r.assembly_stats?.total_ungapped_length), num: true, unit: ' bp' },
+    { label: 'GC', get: (r) => numOrNull(r.assembly_stats?.gc_percent), num: true, unit: '%', digits: 1, points: true },
+    { label: 'Chromosomes', get: (r) => numOrNull(r.assembly_stats?.total_number_of_chromosomes), num: true },
+    { label: 'Contigs', get: (r) => numOrNull(r.assembly_stats?.number_of_contigs), num: true },
+    { label: 'Contig N50', get: (r) => numOrNull(r.assembly_stats?.contig_n50), num: true, unit: ' bp' },
+    { label: 'Contig L50', get: (r) => numOrNull(r.assembly_stats?.contig_l50), num: true },
+    { label: 'Scaffolds', get: (r) => numOrNull(r.assembly_stats?.number_of_scaffolds), num: true },
+    { label: 'Scaffold N50', get: (r) => numOrNull(r.assembly_stats?.scaffold_n50), num: true, unit: ' bp' },
+  ]],
+  ['Quality', [
+    { label: 'CheckM completeness', get: (r) => numOrNull(r.checkm_info?.completeness), num: true, unit: '%', digits: 2, points: true },
+    { label: 'CheckM contamination', get: (r) => numOrNull(r.checkm_info?.contamination), num: true, unit: '%', digits: 2, points: true },
+    { label: 'Taxonomy check', get: (r) => r.average_nucleotide_identity?.taxonomy_check_status, fmt: (v, r) => aniStatusHtml(r.average_nucleotide_identity) },
+    { label: 'Best type match', get: (r) => { const m = r.average_nucleotide_identity?.best_ani_match; return m ? `${m.organism_name} ${m.ani}%` : ''; },
+      fmt: (v, r) => { const m = r.average_nucleotide_identity.best_ani_match; return `<i>${esc(m.organism_name)}</i>, <b>${esc(m.ani)}%</b><br><a class="small" href="#/genome/${encodeURIComponent(m.assembly)}">${esc(m.assembly)}</a>`; } },
+  ]],
+  ['Annotation', [
+    { label: 'Provider', get: (r) => r.annotation_info?.provider },
+    { label: 'Annotated', get: (r) => r.annotation_info?.release_date },
+    { label: 'Genes', get: (r) => numOrNull(r.annotation_info?.stats?.gene_counts?.total), num: true },
+    { label: 'Protein coding', get: (r) => numOrNull(r.annotation_info?.stats?.gene_counts?.protein_coding), num: true },
+    { label: 'Non-coding', get: (r) => numOrNull(r.annotation_info?.stats?.gene_counts?.non_coding), num: true },
+    { label: 'Pseudogenes', get: (r) => numOrNull(r.annotation_info?.stats?.gene_counts?.pseudogene), num: true },
+  ]],
+];
+
+function fmtNum(v, row) {
+  return row.digits ? v.toFixed(row.digits) : fmtN(v);
+}
+
+// "+1,234 bp (+0.4%)" against the first genome; GC and CheckM differ in points.
+function deltaHtml(v, ref, row) {
+  if (v === null || ref === null || v === ref) return '';
+  const d = v - ref;
+  const sign = d > 0 ? '+' : '−';
+  const abs = Math.abs(d);
+  const main = `${sign}${row.digits ? abs.toFixed(row.digits) : fmtN(abs)}${row.points ? ' pt' : row.unit || ''}`;
+  const p = ref ? Math.abs((d / ref) * 100) : 0;
+  const pct = !row.points && ref ? ` (${sign}${p.toFixed(p < 0.1 ? 2 : 1)}%)` : '';
+  return `<div class="delta">${main}${pct}</div>`;
+}
+
+function compareTableHtml(genomes, diffOnly) {
+  const body = COMPARE_ROWS.map(([group, rows]) => {
+    const trs = rows.map((row) => {
+      const vals = genomes.map((g) => row.get(g.r));
+      const shown = vals.map((v) => (v === undefined || v === null || v === '' ? '' : String(v)));
+      if (shown.every((v) => !v)) return '';
+      const differs = new Set(shown).size > 1;
+      if (diffOnly && !differs) return '';
+      const cells = genomes.map((g, i) => {
+        const v = vals[i];
+        if (!shown[i]) return '<td class="muted">—</td>';
+        if (row.num) return `<td class="num">${fmtNum(v, row)}${row.unit || ''}${i ? deltaHtml(v, vals[0], row) : ''}</td>`;
+        return `<td>${row.fmt ? row.fmt(v, g.r) : esc(v)}</td>`;
+      }).join('');
+      return `<tr class="${differs ? 'differs' : ''}"><th>${esc(row.label)}</th>${cells}</tr>`;
+    }).join('');
+    return trs ? `<tr class="group"><th colspan="${genomes.length + 1}">${esc(group)}</th></tr>${trs}` : '';
+  }).join('');
+  return body || `<tr><td colspan="${genomes.length + 1}" class="muted">These genomes do not differ in any field shown.</td></tr>`;
+}
+
+function compareHeadHtml(genomes, { removable = true } = {}) {
+  return `<tr><th></th>${genomes.map((g, i) => {
+    const strain = strainOf(g.r);
+    const name = g.r.organism?.organism_name || '';
+    return `<th class="genome-col">
+      <div class="genome-col-head">
+        <a class="mono" href="#/genome/${encodeURIComponent(g.acc)}">${esc(g.acc)}</a>
+        ${removable ? `<button class="icon-x" type="button" data-remove="${esc(g.acc)}" title="Remove from comparison" aria-label="Remove ${esc(g.acc)}">×</button>` : ''}
+      </div>
+      <div class="genome-col-name"><i>${esc(name)}</i>${strain && !name.includes(strain) ? ` ${esc(strain)}` : ''}</div>
+      ${i === 0 ? '<span class="badge">reference</span>' : ''}
+    </th>`;
+  }).join('')}</tr>`;
+}
+
+async function renderCompare(params, token) {
+  const inputs = parseAccessionList(params.get('ids') || '');
+  const formHtml = (value = '') => `
+    <form class="compare-add" id="compare-add">
+      <textarea name="ids" rows="1" placeholder="Add GCF_, GCA_ or sequence accessions…" aria-label="Accessions to add">${esc(value)}</textarea>
+      <button class="btn primary">${inputs.length ? 'Add' : 'Compare'}</button>
+    </form>`;
+  const bindAdd = (current) => $('#compare-add').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const added = parseAccessionList(new FormData(e.target).get('ids'));
+    if (added.length) location.hash = compareHref([...new Set([...current, ...added])]);
+  });
+
+  if (inputs.length < 2) {
+    main.innerHTML = `
+      <article class="record compare">
+        <header class="record-head"><span class="db-chip">Compare</span><h1>Compare genomes</h1></header>
+        <p class="muted">Give two to ${MAX_COMPARE} assemblies (GCF_ or GCA_) or sequence accessions such as NC_002516.2, which stand for the assembly they belong to.</p>
+        ${formHtml(inputs.join(' '))}
+      </article>`;
+    bindAdd([]);
+    return;
+  }
+
+  main.innerHTML = loadingHtml(`Loading ${inputs.length} genomes`);
+  const wanted = inputs.slice(0, MAX_COMPARE);
+  const settled = await Promise.allSettled(wanted.map(async (input) => {
+    const acc = await resolveGenomeAccession(input);
+    const r = await getGenomeReport(acc);
+    return { input, acc: r.accession || acc, r };
+  }));
+  if (token !== routeToken) return;
+
+  const genomes = [];
+  const problems = [];
+  settled.forEach((s, i) => {
+    if (s.status === 'rejected') problems.push(`${wanted[i]}: ${s.reason?.message || s.reason}`);
+    else if (genomes.some((g) => g.acc === s.value.acc)) problems.push(`${wanted[i]} is ${s.value.acc}, already in the comparison.`);
+    else genomes.push(s.value);
+  });
+  if (inputs.length > MAX_COMPARE) problems.push(`Only the first ${MAX_COMPARE} accessions are compared.`);
+  const accs = genomes.map((g) => g.acc);
+
+  const notices = problems.map((p) => `<div class="notice">${esc(p)}</div>`).join('');
+  if (genomes.length < 2) {
+    main.innerHTML = `
+      <article class="record compare">
+        <header class="record-head"><span class="db-chip">Compare</span><h1>Compare genomes</h1></header>
+        ${notices}
+        <p class="muted">At least two genomes are needed.</p>
+        ${formHtml()}
+      </article>`;
+    bindAdd(accs);
+    return;
+  }
+
+  let diffOnly = false;
+  try { diffOnly = localStorage.getItem('el.compareDiffOnly') === '1'; } catch { /* storage blocked */ }
+
+  main.innerHTML = `
+    <article class="record compare">
+      <header class="record-head">
+        <span class="db-chip">Compare</span>
+        <h1>${genomes.length} genomes</h1>
+        <div class="meta">${[...new Set(genomes.map((g) => g.r.organism?.organism_name).filter(Boolean))].slice(0, 4).map((o) => `<span><i>${esc(o)}</i></span>`).join('')}</div>
+      </header>
+      ${notices}
+      <div class="compare-main">
+        <div class="compare-tools">
+          ${genomes.length < MAX_COMPARE ? formHtml() : ''}
+          <div class="spacer"></div>
+          <label class="check"><input type="checkbox" id="diff-only" ${diffOnly ? 'checked' : ''}> Only rows that differ</label>
+          <a class="btn small" href="${genomeDownloadUrl(accs)}">Download all (ZIP)</a>
+        </div>
+
+        <section>
+          <div class="card-head"><h3>Overview</h3><span class="muted small">Differences are measured against the first genome.</span></div>
+          <div class="table-wrap"><table class="compare-table">
+            <thead>${compareHeadHtml(genomes)}</thead>
+            <tbody id="compare-rows">${compareTableHtml(genomes, diffOnly)}</tbody>
+          </table></div>
+        </section>
+
+        <section>
+          <div class="card-head"><h3>Sequences</h3><span class="muted small">Chromosomes and plasmids, then the remaining contigs together</span></div>
+          <div class="table-wrap"><table class="compare-table">
+            <thead>${compareHeadHtml(genomes, { removable: false })}</thead>
+            <tbody id="compare-seqs"><tr><td colspan="${genomes.length + 1}">${loadingHtml('Loading sequences')}</td></tr></tbody>
+          </table></div>
+        </section>
+
+        <section class="card" id="gene-content">
+          <div class="card-head"><h3>Gene content</h3></div>
+          <p class="small muted">Reads every annotated gene of each genome from NCBI Datasets (about one request per 1,000 genes) and matches them by product name, gene symbol or identical protein.</p>
+          <div class="btn-row"><button class="btn primary" id="gene-go">Compare gene content</button></div>
+        </section>
+      </div>
+    </article>`;
+
+  $('#diff-only').addEventListener('change', (e) => {
+    try { localStorage.setItem('el.compareDiffOnly', e.target.checked ? '1' : ''); } catch { /* storage blocked */ }
+    $('#compare-rows').innerHTML = compareTableHtml(genomes, e.target.checked);
+  });
+  main.querySelectorAll('[data-remove]').forEach((b) => b.addEventListener('click', () => {
+    const rest = accs.filter((a) => a !== b.dataset.remove);
+    location.hash = rest.length > 1 ? compareHref(rest) : `#/genome/${encodeURIComponent(rest[0])}`;
+  }));
+  if ($('#compare-add')) bindAdd(accs);
+  $('#gene-go').addEventListener('click', () => loadGeneContent(genomes, token));
+
+  loadCompareSequences(genomes, token);
+}
+
+async function loadCompareSequences(genomes, token) {
+  const pages = await Promise.allSettled(genomes.map((g) => genomeSequences(g.acc)));
+  if (token !== routeToken) return;
+  const cols = pages.map((p, i) => {
+    if (p.status === 'rejected') return { error: p.reason?.message || 'Could not load.' };
+    const placed = p.value.reports.filter((s) => s.role === 'assembled-molecule');
+    const total = Number(genomes[i].r.assembly_stats?.total_sequence_length) || 0;
+    const placedLen = placed.reduce((a, s) => a + (s.length || 0), 0);
+    return { placed, rest: p.value.total - placed.length, restLen: Math.max(0, total - placedLen) };
+  });
+  const depth = Math.max(0, ...cols.map((c) => c.placed?.length || 0));
+  const rows = [];
+  for (let k = 0; k < Math.min(depth, 30); k++) {
+    rows.push(`<tr><th>${k === 0 ? 'Molecules' : ''}</th>${cols.map((c) => {
+      const s = c.placed?.[k];
+      if (!s) return '<td></td>';
+      const acc = s.refseq_accession && s.refseq_accession !== 'na' ? s.refseq_accession : s.genbank_accession;
+      return `<td><div>${esc(s.chr_name || s.sequence_name || 'molecule')} ${s.assigned_molecule_location_type && s.assigned_molecule_location_type.toLowerCase() !== String(s.chr_name || s.sequence_name).toLowerCase() ? `<span class="muted small">${esc(s.assigned_molecule_location_type)}</span>` : ''}</div>
+        <a class="mono small" href="#/record/nuccore/${encodeURIComponent(acc)}">${esc(acc)}</a>
+        <div class="num-inline">${fmtN(s.length)} bp${s.gc_percent !== undefined ? ` · ${s.gc_percent}% GC` : ''}</div></td>`;
+    }).join('')}</tr>`);
+  }
+  rows.push(`<tr><th>Other sequences</th>${cols.map((c) => (c.error ? `<td class="muted small">${esc(c.error)}</td>`
+    : c.rest > 0 ? `<td>${fmtN(c.rest)} contig${c.rest === 1 ? '' : 's'} / scaffold${c.rest === 1 ? '' : 's'}<div class="num-inline">${fmtN(c.restLen)} bp</div></td>`
+      : '<td class="muted">none</td>')).join('')}</tr>`);
+  $('#compare-seqs').innerHTML = rows.join('');
+}
+
+const annotationCache = new Map();
+
+function getAnnotation(acc, onProgress) {
+  if (!annotationCache.has(acc)) {
+    const p = annotationReport(acc, { onProgress });
+    annotationCache.set(acc, p);
+    p.catch(() => annotationCache.delete(acc));
+  }
+  return annotationCache.get(acc);
+}
+
+const GENE_ROWS_SHOWN = 300;
+
+async function loadGeneContent(genomes, token) {
+  const box = $('#gene-content');
+  const status = (html) => { box.innerHTML = `<div class="card-head"><h3>Gene content</h3></div>${html}`; };
+  const lists = [];
+  try {
+    for (const [i, g] of genomes.entries()) {
+      status(loadingHtml(`Reading genes of ${g.acc} (${i + 1} of ${genomes.length})`));
+      lists.push(await getAnnotation(g.acc, (done, total) => {
+        if (token === routeToken && done < total) status(loadingHtml(`Reading genes of ${g.acc} (${i + 1} of ${genomes.length}): ${fmtN(done)} of ${fmtN(total)}`));
+      }));
+      if (token !== routeToken) return;
+    }
+  } catch (e) {
+    if (token === routeToken) status(`${errorHtml(e)}<div class="btn-row"><button class="btn" id="gene-go">Try again</button></div>`);
+    $('#gene-go')?.addEventListener('click', () => loadGeneContent(genomes, token));
+    return;
+  }
+  renderGeneContent(box, genomes, lists);
+}
+
+function renderGeneContent(box, genomes, lists) {
+  const state = { key: 'product', filter: 'differs', q: '', shown: GENE_ROWS_SHOWN };
+  const n = genomes.length;
+  const types = [...new Set(lists.flatMap((genes) => genes.map((g) => g.type)))].sort();
+  const typeCounts = lists.map((genes) => genes.reduce((m, g) => m.set(g.type, (m.get(g.type) || 0) + 1), new Map()));
+  const empty = genomes.filter((_, i) => !lists[i].length).map((g) => g.acc);
+  const notWp = genomes.filter((_, i) => {
+    const prots = lists[i].filter((g) => g.protein);
+    return prots.length && prots.filter((g) => g.protein.startsWith('WP_')).length / prots.length < 0.5;
+  }).map((g) => g.acc);
+
+  box.innerHTML = `
+    <div class="card-head"><h3>Gene content</h3></div>
+    ${empty.length ? `<div class="notice">${esc(empty.join(', '))} ${empty.length === 1 ? 'has' : 'have'} no gene annotation in NCBI Datasets${empty.some((a) => a.startsWith('GCA')) ? '; the RefSeq (GCF_) copy is often annotated' : ''}.</div>` : ''}
+    <div class="table-wrap"><table class="compare-table">
+      <thead>${compareHeadHtml(genomes, { removable: false })}</thead>
+      <tbody>
+        <tr class="group"><th colspan="${n + 1}">Genes by type</th></tr>
+        ${types.map((t) => `<tr><th>${esc(humanize(t))}</th>${typeCounts.map((m) => `<td class="num">${m.has(t) ? fmtN(m.get(t)) : '<span class="muted">—</span>'}</td>`).join('')}</tr>`).join('')}
+        <tr><th>All genes</th>${lists.map((g) => `<td class="num"><b>${fmtN(g.length)}</b></td>`).join('')}</tr>
+      </tbody>
+      <tbody id="gene-summary"></tbody>
+    </table></div>
+
+    <div class="gene-controls">
+      <span class="small muted">Match genes by</span>
+      <div class="segmented" id="gene-key">${Object.entries(GENE_KEYS).map(([k, v]) => `<button type="button" data-key="${k}" aria-pressed="${k === state.key}">${esc(v.label)}</button>`).join('')}</div>
+      <select id="gene-filter" aria-label="Which groups to show">
+        <option value="differs">Count differs</option>
+        <option value="missing">Missing from some</option>
+        <option value="core">In every genome</option>
+        ${genomes.map((g, i) => `<option value="only:${i}">Only in ${esc(g.acc)}</option>`).join('')}
+        ${genomes.map((g, i) => `<option value="lacks:${i}">Missing from ${esc(g.acc)}</option>`).join('')}
+        <option value="all">All groups</option>
+      </select>
+      <input type="search" id="gene-q" placeholder="Filter by name, symbol, locus tag…" aria-label="Filter genes">
+      <button class="btn small" type="button" id="gene-dl">Download table (TSV)</button>
+    </div>
+    <p class="small muted" id="gene-note"></p>
+    <div class="table-wrap gene-matrix"><table>
+      <thead>${compareHeadHtml(genomes, { removable: false })}</thead>
+      <tbody id="gene-rows"></tbody>
+    </table></div>
+    <div class="pager" id="gene-more"></div>`;
+
+  let content;
+  const matches = (row) => {
+    const c = row.counts;
+    const f = state.filter;
+    if (f === 'differs' && c.every((x) => x === c[0])) return false;
+    if (f === 'missing' && c.every(Boolean)) return false;
+    if (f === 'core' && !c.every(Boolean)) return false;
+    if (f.startsWith('only:')) { const i = +f.slice(5); if (!c[i] || c.some((x, j) => j !== i && x)) return false; }
+    if (f.startsWith('lacks:')) { const i = +f.slice(6); if (c[i] || !c.some(Boolean)) return false; }
+    if (state.q) {
+      const q = state.q;
+      if (!row.label.toLowerCase().includes(q)
+        && !row.genes.some((gs) => gs.some((g) => g.symbol.toLowerCase().includes(q) || g.locus.toLowerCase().includes(q)
+          || g.product.toLowerCase().includes(q) || g.protein.toLowerCase().includes(q)))) return false;
+    }
+    return true;
+  };
+
+  const subtitle = (row) => {
+    const all = row.genes.flat();
+    if (state.key === 'product') return [...new Set(all.map((g) => g.symbol).filter(Boolean))].slice(0, 6).join(', ');
+    return [...new Set(all.map((g) => g.product || g.name).filter(Boolean))].slice(0, 2).join(' / ');
+  };
+  const labelHtml = (row) => (state.key === 'protein'
+    ? `<a class="mono" href="#/record/protein/${encodeURIComponent(row.key)}">${esc(row.key)}</a>`
+    : state.key === 'symbol' ? `<i>${esc(row.label)}</i>` : esc(row.label));
+
+  const draw = () => {
+    const rows = content.rows.filter(matches);
+    const shown = rows.slice(0, state.shown);
+    $('#gene-rows').innerHTML = shown.map((row) => {
+      const sub = subtitle(row);
+      const max = Math.max(...row.counts);
+      return `<tr><th class="gene-label">${labelHtml(row)}${sub ? `<div class="muted small">${esc(sub)}</div>` : ''}</th>${row.counts.map((c, i) => {
+        if (!c) return '<td class="num absent">—</td>';
+        const tags = row.genes[i].map((g) => g.locus || g.protein || `${g.seq}:${g.start}`).filter(Boolean);
+        return `<td class="num${c < max ? ' fewer' : ''}" title="${esc(tags.slice(0, 20).join(', ') + (tags.length > 20 ? ` and ${tags.length - 20} more` : ''))}">${fmtN(c)}</td>`;
+      }).join('')}</tr>`;
+    }).join('') || `<tr><td colspan="${n + 1}" class="muted">No groups match.</td></tr>`;
+    $('#gene-more').innerHTML = `<span class="muted">${fmtN(shown.length)} of ${fmtN(rows.length)} groups shown</span>
+      ${rows.length > shown.length ? `<button class="btn small" id="gene-more-btn">Show ${fmtN(Math.min(GENE_ROWS_SHOWN, rows.length - shown.length))} more</button>` : ''}`;
+    $('#gene-more-btn')?.addEventListener('click', () => { state.shown += GENE_ROWS_SHOWN; draw(); });
+  };
+
+  const regroup = () => {
+    content = geneContent(lists, state.key);
+    state.shown = GENE_ROWS_SHOWN;
+    $('#gene-summary').innerHTML = `
+      <tr class="group"><th colspan="${n + 1}">Matched by ${esc(GENE_KEYS[state.key].label.toLowerCase())}: ${fmtN(content.core)} groups in every genome</th></tr>
+      <tr><th>Groups present</th>${content.summary.map((s) => `<td class="num">${fmtN(s.present)}</td>`).join('')}</tr>
+      <tr><th>Only in this genome</th>${content.summary.map((s) => `<td class="num">${fmtN(s.unique)}</td>`).join('')}</tr>
+      ${content.unkeyed.some(Boolean) ? `<tr><th>Genes without a ${state.key === 'symbol' ? 'symbol' : 'protein'}</th>${content.unkeyed.map((u) => `<td class="num muted">${fmtN(u)}</td>`).join('')}</tr>` : ''}`;
+    const notes = {
+      product: 'Genes are grouped by product name, ignoring case. Names differ between annotation pipelines, so compare genomes annotated by the same provider for the cleanest result. Hover a count for locus tags.',
+      symbol: 'Only genes with a symbol are grouped; many prokaryote genes have none. Hover a count for locus tags.',
+      protein: `Proteins are grouped by accession. RefSeq gives each distinct prokaryote protein sequence one WP_ accession, so a shared WP_ means an identical protein.${notWp.length ? ` ${notWp.join(', ')} ${notWp.length === 1 ? 'uses' : 'use'} other protein accessions, which are never shared between genomes.` : ''}`,
+    };
+    $('#gene-note').textContent = notes[state.key];
+    $$('#gene-key button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.key === state.key)));
+    draw();
+  };
+
+  $$('#gene-key button').forEach((b) => b.addEventListener('click', () => { state.key = b.dataset.key; regroup(); }));
+  $('#gene-filter').addEventListener('change', (e) => { state.filter = e.target.value; state.shown = GENE_ROWS_SHOWN; draw(); });
+  let timer;
+  $('#gene-q').addEventListener('input', (e) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { state.q = e.target.value.trim().toLowerCase(); state.shown = GENE_ROWS_SHOWN; draw(); }, 200);
+  });
+  $('#gene-dl').addEventListener('click', () => {
+    const rows = content.rows.filter(matches);
+    const cell = (v) => String(v ?? '').replace(/[\t\n]/g, ' ');
+    const head = ['group', 'symbols_or_products', ...genomes.map((g) => g.acc), ...genomes.map((g) => `${g.acc}_genes`)];
+    const lines = rows.map((row) => [row.label, subtitle(row), ...row.counts,
+      ...row.genes.map((gs) => gs.map((g) => g.locus || g.protein).join(','))].map(cell).join('\t'));
+    const stamp = new Date().toISOString().slice(0, 10);
+    saveFile(`gene_content_${state.key}_${n}genomes_${stamp}.tsv`, [head.join('\t'), ...lines].join('\n') + '\n', 'text/tab-separated-values');
+  });
+  regroup();
 }
 
 const ASSEMBLY_LEVELS = [
@@ -1212,6 +1639,7 @@ async function renderGenomeSearch(params, token) {
             <option value="zip">Genome ZIP (FASTA, GFF, proteins)</option>
           </select>
           <button class="btn" id="dl-go">Download selected</button>
+          <button class="btn primary" id="compare-go">Compare selected</button>
         </div>
       </div>
       <div class="table-wrap genome-table"><table>
@@ -1248,6 +1676,14 @@ async function renderGenomeSearch(params, token) {
     $('#sel-all').addEventListener('change', (e) => {
       $$('.sel', rows).forEach((c) => { c.checked = e.target.checked; });
       updateCount();
+    });
+    $('#compare-go').addEventListener('click', () => {
+      const ids = $$('.sel:checked', rows).map((c) => c.value);
+      if (ids.length < 2) return toast('Select two or more genomes to compare.');
+      if (ids.length > MAX_COMPARE) return toast(`Pick ${MAX_COMPARE} genomes or fewer to compare.`);
+      // The reports are already here; save the compare page from fetching them again.
+      for (const r of loaded) if (ids.includes(r.accession) && !genomeCache.has(r.accession)) genomeCache.set(r.accession, Promise.resolve(r));
+      location.hash = compareHref(ids);
     });
     $('#dl-go').addEventListener('click', () => {
       const ids = $$('.sel:checked', rows).map((c) => c.value);

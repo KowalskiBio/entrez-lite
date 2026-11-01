@@ -15,6 +15,7 @@ const EXPORTS = [
   'parseFeatureTable', 'parseFasta', 'toFasta', 'cleanSeqId', 'domainRank',
   'idListTerm', 'expandHistoryRefs', 'ACCESSION_RE',
   'eutilsRequest', 'esearchHistory', 'efetchAll', 'esummaryAll', 'sourceSize',
+  'annotationReport', 'geneContent', 'parseAccessionList', 'resolveGenomeAccession',
 ];
 
 // Values made inside the context have its own Array, Object and Error, which strict

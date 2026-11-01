@@ -97,6 +97,12 @@ You can also paste a `GCF_` or `GCA_` accession into the search box, or pick **G
   <img src="docs/images/genome.png" alt="Genome page for Pseudomonas fluorescens AU11706: taxonomy check inconclusive, best type match Pseudomonas saponiphila at 94.17% ANI" width="100%" />
 </p>
 
+### Side by side
+
+**Compare this genome** in the genome sidebar takes up to five more assemblies. Paste `GCF_` or `GCA_` accessions, or a contig or chromosome accession such as `NC_008463.1`, which stands for the assembly it belongs to. You can also tick genomes in a Genome search and press **Compare selected**. The comparison puts organism, tax ID, BioSample, release date, sequencing technology, assembler, coverage, length, GC, contigs, N50, CheckM and the ANI check in one table, with each number's difference from the first genome. One switch hides the rows where they all agree. The chromosomes and plasmids are listed below that.
+
+**Compare gene content** reads every annotated gene of each genome and groups them by product name, gene symbol or identical protein. A shared `WP_` accession means the same protein sequence. Filter for what one genome has and the others lack, or the reverse, and download the table as TSV.
+
 ## Run it
 
 **Online:** [kowalskibio.github.io/entrez-lite](https://kowalskibio.github.io/entrez-lite/)
@@ -123,6 +129,7 @@ NCBI allows 3 requests per second without an API key. Paste a free key into **Se
 | Just the mature CDS of that gene | From the same region, go to **Features**, pick the CDS row, click **Sequence** |
 | A record you already know | Paste the accession (`HQ288918.1`) into the search box |
 | Complete genomes of a species | Pick **Genome**, search `Pseudomonas fluorescens`, tick **Complete genome** |
+| What sets two strains apart | Open one genome, paste the other's `GCF_` under **Compare this genome**, then **Compare gene content** |
 | To check a strain's species | Open any of its contigs and look at the **Genome** card, or paste the `GCF_` accession |
 | To see what NCBI did with your query | Open **Search details** above the results |
 
@@ -136,7 +143,7 @@ js/app.js         hash router and all the views
 tests/            node --test suite, with saved NCBI responses as fixtures
 ```
 
-Everything goes through [E-utilities](https://www.ncbi.nlm.nih.gov/books/NBK25501/): `esearch` for hits, `esummary` for the result list, `efetch` for GenBank, FASTA, feature tables and CDS, and `elink` for related records. Genome pages come from the [Datasets v2 API](https://www.ncbi.nlm.nih.gov/datasets/docs/v2/api/), which provides the assembly report, CheckM, ANI and the sequence list. Both services allow cross-origin requests, so the browser calls them directly and no proxy is needed.
+Everything goes through [E-utilities](https://www.ncbi.nlm.nih.gov/books/NBK25501/): `esearch` for hits, `esummary` for the result list, `efetch` for GenBank, FASTA, feature tables and CDS, and `elink` for related records. Genome pages come from the [Datasets v2 API](https://www.ncbi.nlm.nih.gov/datasets/docs/v2/api/), which provides the assembly report, CheckM, ANI, the sequence list and, for comparisons, the gene annotation report. Both services allow cross-origin requests, so the browser calls them directly and no proxy is needed.
 
 A few details that took some testing:
 

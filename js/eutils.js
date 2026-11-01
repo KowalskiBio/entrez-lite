@@ -360,6 +360,103 @@ async function taxonSuggest(text) {
   }));
 }
 
+// Every gene annotated on an assembly, read 1,000 per request (the API's largest
+// page). An assembly without annotation comes back as an empty list.
+async function annotationReport(accession, { onProgress } = {}) {
+  const genes = [];
+  let pageToken = '';
+  do {
+    const qs = new URLSearchParams({ page_size: '1000' });
+    if (pageToken) qs.set('page_token', pageToken);
+    const data = await datasetsRequest(`genome/accession/${encodeURIComponent(accession)}/annotation_report?${qs}`);
+    for (const r of data.reports || []) genes.push(compactGene(r.annotation || {}));
+    pageToken = data.next_page_token || '';
+    onProgress?.(genes.length, data.total_count || genes.length);
+  } while (pageToken);
+  return genes;
+}
+
+// The fields of an annotation report row that a comparison needs.
+function compactGene(a) {
+  const region = a.genomic_regions?.[0]?.gene_range;
+  const range = region?.range?.[0];
+  const protein = a.proteins?.[0];
+  return {
+    symbol: a.symbol || '',
+    name: a.name || '',
+    type: a.gene_type || 'other',
+    locus: a.locus_tag || '',
+    seq: region?.accession_version || '',
+    start: Number(range?.begin) || 0,
+    end: Number(range?.end) || 0,
+    strand: range?.orientation === 'minus' ? '-' : '+',
+    protein: protein?.accession_version || '',
+    product: protein?.name || '',
+    length: protein?.length || 0,
+  };
+}
+
+// How genes are matched between genomes. A product name is the loosest match and
+// works across annotation pipelines; a WP_ protein accession is shared only by
+// proteins identical in sequence, which RefSeq's prokaryote pipeline assigns.
+const GENE_KEYS = {
+  product: { label: 'Product name', of: (g) => (g.product || g.name).trim().toLowerCase() },
+  symbol: { label: 'Gene symbol', of: (g) => g.symbol },
+  protein: { label: 'Identical protein', of: (g) => g.protein },
+};
+
+// Genes of several genomes grouped by a GENE_KEYS key. Each row holds a gene list
+// per genome, in input order; genes the key cannot place (no symbol, no protein)
+// are counted in `unkeyed` instead.
+function geneContent(genomes, keyName) {
+  const keyOf = GENE_KEYS[keyName].of;
+  const rows = new Map();
+  const unkeyed = genomes.map(() => 0);
+  genomes.forEach((genes, i) => {
+    for (const g of genes) {
+      const key = keyOf(g);
+      if (!key) { unkeyed[i]++; continue; }
+      let row = rows.get(key);
+      if (!row) {
+        row = { key, label: keyName === 'product' ? (g.product || g.name).trim() : key, genes: genomes.map(() => []) };
+        rows.set(key, row);
+      }
+      row.genes[i].push(g);
+    }
+  });
+  const list = [...rows.values()];
+  const summary = genomes.map((_, i) => ({ present: 0, unique: 0 }));
+  let core = 0;
+  for (const row of list) {
+    row.counts = row.genes.map((g) => g.length);
+    const holders = row.counts.filter(Boolean).length;
+    if (holders === genomes.length) core++;
+    row.counts.forEach((n, i) => {
+      if (!n) return;
+      summary[i].present++;
+      if (holders === 1) summary[i].unique++;
+    });
+  }
+  return { rows: list, unkeyed, core, summary };
+}
+
+// A pasted list of genome or sequence accessions, deduplicated, in order.
+function parseAccessionList(text) {
+  return [...new Set(String(text).split(/[\s,;]+/).filter(Boolean).map((t) => t.toUpperCase()))];
+}
+
+// A GCF_/GCA_ accession as given, or the assembly a nucleotide accession belongs to.
+async function resolveGenomeAccession(text) {
+  const t = String(text).trim().toUpperCase();
+  if (/^GC[AF]_\d{9}(\.\d+)?$/.test(t)) return t;
+  if (!ACCESSION_RE.test(t)) throw new EutilsError(`"${text}" is not an accession.`);
+  const { ids } = await esearch('nuccore', `${t}[accn]`, { retmax: 1 });
+  if (!ids.length) throw new EutilsError(`No nucleotide record "${text}".`);
+  const acc = await assemblyAccessionFor('nuccore', ids[0]);
+  if (!acc) throw new EutilsError(`${text} is not part of an assembly.`);
+  return acc;
+}
+
 // The assembly a sequence record belongs to, as a GCF_ (RefSeq) or GCA_ accession.
 async function assemblyAccessionFor(db, uid) {
   let ids = [uid];

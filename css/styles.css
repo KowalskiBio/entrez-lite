@@ -93,15 +93,15 @@ main.container { flex: 1; padding-top: 24px; padding-bottom: 40px; }
 
 /* --- Form controls --- */
 
-input, select, button { font: inherit; color: inherit; }
-input, select {
+input, select, textarea, button { font: inherit; color: inherit; }
+input, select, textarea {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 7px 10px;
   min-width: 0;
 }
-input:focus, select:focus, button:focus-visible {
+input:focus, select:focus, textarea:focus, button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-color: transparent;
@@ -367,6 +367,49 @@ dialog::backdrop { background: rgb(10 14 20 / 0.45); }
   .hero h1 { font-size: 1.5rem; }
 }
 .genome-table td:last-child { white-space: nowrap; }
+
+/* --- Compare genomes --- */
+
+textarea { resize: vertical; font-family: var(--mono); font-size: 0.85rem; }
+#compare-form textarea { width: 100%; }
+.compare-main { display: flex; flex-direction: column; gap: 18px; }
+.compare-main > section > .card-head { margin-bottom: 8px; gap: 12px; flex-wrap: wrap; }
+.compare-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.compare-add { display: flex; gap: 8px; align-items: flex-start; flex: 1; min-width: 260px; max-width: 620px; }
+.compare-add textarea { flex: 1; min-height: 36px; }
+.compare-table { table-layout: fixed; min-width: 640px; }
+.compare-table th:first-child { width: 190px; color: var(--muted); font-weight: 500; }
+.compare-table thead th:first-child { background: var(--surface-2); }
+.compare-table td, .compare-table th { word-break: break-word; }
+.compare-table tr.group th {
+  background: var(--surface-2); color: var(--text); font-size: 0.75rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em; padding: 6px 12px;
+}
+.compare-table tr.differs > th:first-child { color: var(--text); box-shadow: inset 3px 0 0 var(--accent); }
+.compare-table td.num { white-space: normal; }
+.genome-col { color: var(--text) !important; font-size: 0.85rem !important; }
+.genome-col-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.genome-col-name { font-weight: 400; margin: 2px 0; }
+.genome-col .badge { margin-left: 0; }
+.icon-x {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  font-size: 1.1rem; line-height: 1; padding: 0 4px; border-radius: 4px;
+}
+.icon-x:hover { color: var(--danger); background: var(--danger-weak); }
+.delta { font-size: 0.75rem; font-weight: 500; color: var(--muted); }
+.num-inline { font-size: 0.8rem; color: var(--muted); }
+.gene-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gene-controls input[type="search"] { flex: 1; min-width: 200px; }
+.gene-matrix { max-height: 70vh; overflow: auto; }
+.gene-matrix table { table-layout: fixed; min-width: 640px; }
+.gene-matrix th.gene-label { width: 40%; font-weight: 500; color: var(--text); }
+.gene-matrix td.absent { color: var(--muted); background: color-mix(in srgb, var(--danger-weak) 55%, transparent); }
+.gene-matrix td.fewer { background: var(--warn-weak); }
+#gene-content > p { margin: 0; }
+@media (max-width: 640px) {
+  .compare-add { min-width: 100%; }
+  .compare-table th:first-child { width: 120px; }
+}
 
 /* --- Search history --- */
 
