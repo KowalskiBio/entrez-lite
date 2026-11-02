@@ -2297,6 +2297,7 @@ async function renderMap(body, id, safeId, isStale) {
     </div>
     <div id="map-svg" class="map-wrap"></div>
     <div id="map-feat-info"></div>
+    <div id="map-context"></div>
     <div class="panel-actions whole-actions">
       <b>Whole ${esc(id)}:</b>
       ${m.whole ? '<button class="btn small" data-whole="rec">mRNA with UTRs</button>' : ''}
@@ -2596,6 +2597,48 @@ async function renderMap(body, id, safeId, isStale) {
     });
   }
 
+  // A record with nothing beyond its coding sequence (a cDNA, or an mRNA that is all
+  // CDS): say so, and point to where the neighbouring sequence is kept.
+  const loadMapContext = async () => {
+    const box = $('#map-context', body);
+    const n5 = cdsStart;
+    const n3 = Math.max(0, dna.length - cdsEndIdx());
+    box.innerHTML = `<div class="notice">
+      <p><b>The map ends with this record.</b> ${esc(cb.acc)} holds ${fmtN(n5)} nt before the coding sequence and ${fmtN(n3)} nt after it${m.whole ? '' : '; it is the coding pieces only'},
+      so there is nothing further to load here. Sequence beyond it belongs to other records.</p>
+      <div id="map-context-links">${loadingHtml('Looking for the gene’s other records')}</div></div>`;
+    const out = $('#map-context-links', box);
+    try {
+      const prot = await getSummary('protein', id);
+      const genes = (await elinkNeighbor('protein', prot.uid, 'protein_gene')).ids;
+      if (!genes.length) { out.innerHTML = '<p class="muted">NCBI links this protein to no gene record.</p>'; return; }
+      const [gene] = await esummary('gene', [genes[0]]);
+      const loc = (gene.genomicinfo || []).find((g) => g.chraccver);
+      let proteins = [];
+      try {
+        const refIds = (await elinkNeighbor('gene', gene.uid, 'gene_protein_refseq')).ids.slice(0, 12);
+        if (refIds.length) proteins = await esummary('protein', refIds);
+      } catch { /* the genomic link is still useful */ }
+      if (!box.isConnected) return;
+      const minus = loc && loc.chrstart > loc.chrstop;
+      const from = loc ? Math.min(loc.chrstart, loc.chrstop) + 1 : 0;
+      const to = loc ? Math.max(loc.chrstart, loc.chrstop) + 1 : 0;
+      out.innerHTML = `
+        <ul class="link-list">
+          <li><a href="#/record/gene/${esc(gene.uid)}">Gene ${esc(gene.name)}</a> <span class="muted">${esc(gene.description || '')}</span></li>
+          ${loc ? `<li><a href="${hashFor(`/record/nuccore/${encodeURIComponent(loc.chraccver)}`, { from: Math.max(1, from - MAP_FLANK), to: to + MAP_FLANK, strand: minus ? 2 : '', tab: 'fasta' })}">
+            Genomic locus: ${esc(loc.chraccver)} ${fmtN(from)}–${fmtN(to)}, with ${fmtN(MAP_FLANK)} nt either side</a>
+            <span class="muted">(${minus ? 'minus' : 'plus'} strand; the gene’s introns are included)</span></li>` : ''}
+        </ul>
+        ${proteins.length ? `<p class="small muted">RefSeq proteins of this gene have a map of their own, which for a transcript with UTRs reaches past the coding sequence.
+          They are not necessarily the same sequence as ${esc(id)} (${fmtN(L)} aa).</p>
+          <ul class="link-list">${proteins.map((q) => `<li><a href="#/record/protein/${encodeURIComponent(q.accessionversion || q.caption)}?tab=map">${esc(q.accessionversion || q.caption)}</a>
+            <span class="muted">${fmtN(q.slen)} aa${Number(q.slen) === L ? ' · same length' : ''} · ${esc(q.title)}</span></li>`).join('')}</ul>` : ''}`;
+    } catch (e) {
+      if (box.isConnected) out.innerHTML = `<p class="muted">Could not look up the gene: ${esc(e.message || e)}</p>`;
+    }
+  };
+
   // --- Pointer handling, bound once on the persistent svg ------------------------
   let zoomDrag = null;
   const ntAtClient = (ev) => {
@@ -2844,6 +2887,7 @@ async function renderMap(body, id, safeId, isStale) {
   drawOut();
   drawDomains();
   ensureLoaded();
+  if (!m.rec) loadMapContext();
 }
 
 function summaryTabHtml(db, doc) {
