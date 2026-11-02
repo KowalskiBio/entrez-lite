@@ -2060,6 +2060,8 @@ function proteinFactsHtml(db, doc) {
 
 // --- Protein <-> nucleotide map ------------------------------------------------
 
+// Sequence kept either side of a gene that sits inside a larger record.
+const MAP_FLANK = 3000;
 const DOMAIN_COLORS = [200, 30, 140, 280, 340, 60, 170, 250];
 
 // Where a protein sits on the sequence that encodes it. Reads the CDS feature of the
@@ -2087,9 +2089,28 @@ async function loadProteinMap(id, doc) {
   }
   let dna;
   let cdsStart;
+  // Record coordinate of dna[0] and the direction it runs; null when the pieces of a
+  // spliced CDS were joined and no single numbering applies.
+  let origin = null;
+  let dir = 1;
+  let hasFlank = false;
   if (whole) {
     dna = parseFasta(await cachedFetch(`nuccore|${cb.acc}|fasta|all`, () => efetch('nuccore', cb.acc, 'fasta')))[0]?.seq || '';
     cdsStart = cb.parts[0].from - 1 + frame;
+    origin = 1;
+    hasFlank = true;
+  } else if (cb.parts.length === 1) {
+    // A gene inside a genome: take the coding piece with some sequence either side, so
+    // the map can be moved over the neighbourhood.
+    const q = cb.parts[0];
+    let recLen = Infinity;
+    try { recLen = Number((await getSummary('nuccore', cb.acc)).slen) || Infinity; } catch { /* no clamp */ }
+    const a = Math.max(1, q.from - MAP_FLANK);
+    const b = Math.min(recLen, q.to + MAP_FLANK);
+    dna = parseFasta(await cachedFetch(`nuccore|${cb.acc}|fasta|${a}-${b}-${cb.strand}`,
+      () => efetch('nuccore', cb.acc, 'fasta', { seq_start: a, seq_stop: b, strand: cb.strand === '-' ? 2 : 1 })))[0]?.seq || '';
+    if (cb.strand === '-') { cdsStart = b - q.to + frame; origin = b; dir = -1; } else { cdsStart = q.from - a + frame; origin = a; }
+    hasFlank = true;
   } else {
     const pieces = await Promise.all(cb.parts.map((q) => cachedFetch(`nuccore|${cb.acc}|fasta|${q.from}-${q.to}-${cb.strand}`,
       () => efetch('nuccore', cb.acc, 'fasta', { seq_start: q.from, seq_stop: q.to, strand: cb.strand === '-' ? 2 : 1 }))));
@@ -2103,7 +2124,7 @@ async function loadProteinMap(id, doc) {
   let mismatches = 0;
   for (let i = 1; i < protein.length; i++) if (translated[i] !== protein[i] && protein[i] !== 'X') mismatches++;
   return {
-    protein, domains, dna, cdsStart, cb, whole, table, mismatches,
+    protein, domains, dna, cdsStart, cb, whole, table, mismatches, origin, dir, hasFlank,
     hasStop: /^(TAA|TAG|TGA)$/i.test(dna.slice(cdsStart + protein.length * 3, cdsStart + protein.length * 3 + 3)),
     checked: dna.length >= cdsStart + protein.length * 3 && table !== 4 && !/^(2|3|5|9|13|14|16|21|22|23|24|25)$/.test(String(table)),
   };
@@ -2122,18 +2143,34 @@ async function renderMap(body, id, safeId, isStale) {
 
   const { protein, domains, dna, cdsStart, cb } = m;
   const L = protein.length;
-  // Position of dna index i (0-based) in the source record; only meaningful for a whole record.
-  const recPos = (i) => i + 1;
+  // Record coordinates of dna[lo, hi) as "a-b", lowest first, or coding-relative when the
+  // CDS was joined from several pieces and the record has no single numbering.
+  const coords = (lo, hi) => (m.origin == null
+    ? `${lo - cdsStart + 1}-${hi - cdsStart}`
+    : m.dir > 0 ? `${m.origin + lo}-${m.origin + hi - 1}` : `${m.origin - (hi - 1)}-${m.origin - lo}`);
+  const strandNote = cb.strand === '-' ? ', reverse complement' : '';
   const sel = { from: 1, to: L, flank: 0, stop: false };
 
   body.innerHTML = `
     <p class="muted stats">${esc(id)} · ${fmtN(L)} aa, encoded by
       <a href="#/record/nuccore/${encodeURIComponent(cb.acc)}">${esc(cb.acc)}</a>
-      ${m.whole ? `at ${fmtN(cb.parts[0].from)}..${fmtN(cb.parts[0].to)} of ${fmtN(dna.length)} nt` : cb.parts.map((q) => `${fmtN(q.from)}..${fmtN(q.to)}`).join(', ')}
+      at ${cb.parts.map((q) => `${fmtN(q.from)}..${fmtN(q.to)}`).join(', ')}
       (${cb.strand === '-' ? 'minus' : 'plus'} strand${cb.parts.length > 1 ? `, ${cb.parts.length} exons joined` : ''}).
-      ${m.whole ? '' : 'Only the coding sequence is shown; the source record is too large to show whole.'}</p>
+      ${m.whole ? `The whole ${fmtN(dna.length)} nt record is loaded.`
+        : m.hasFlank ? `The source record is large, so ${fmtN(MAP_FLANK)} nt either side of the gene is loaded${cb.strand === '-' ? ', read as the reverse complement so the gene runs left to right' : ''}.`
+        : 'Only the coding sequence is shown; the source record is too large to show whole.'}</p>
     ${m.checked && m.mismatches > Math.max(2, L * 0.02)
       ? `<div class="notice">Translating this sequence gives ${m.mismatches} residues that differ from the protein. The genetic code or the coding location may not match, so check before ordering anything.</div>` : ''}
+    <div class="map-toolbar" id="map-toolbar">
+      <button class="btn small" data-v="left" title="Move left (←)" aria-label="Move left">◀</button>
+      <button class="btn small" data-v="right" title="Move right (→)" aria-label="Move right">▶</button>
+      <button class="btn small" data-v="out" title="Zoom out (−)" aria-label="Zoom out">−</button>
+      <button class="btn small" data-v="in" title="Zoom in (+)" aria-label="Zoom in">+</button>
+      <button class="btn small" data-v="sel" title="Zoom to the selection">Zoom to selection</button>
+      <button class="btn small" data-v="reset" title="Show the whole sequence">Reset</button>
+      <span class="muted small" id="map-view"></span>
+      <span class="muted small map-hint">⌘/Ctrl + scroll or pinch zooms at the pointer · scroll sideways or drag the nucleotide bar to move · drag the protein bar to select · right-drag zooms to a region</span>
+    </div>
     <div id="map-svg" class="map-wrap"></div>
     <div class="panel-actions whole-actions">
       <b>Whole ${esc(id)}:</b>
@@ -2144,7 +2181,7 @@ async function renderMap(body, id, safeId, isStale) {
     <form class="map-controls" id="map-form">
       <label>From aa <input name="from" type="number" min="1" max="${L}" value="1"></label>
       <label>to aa <input name="to" type="number" min="1" max="${L}" value="${L}"></label>
-      ${m.whole ? '<label>Extra flank (nt) <input name="flank" type="number" min="0" max="5000" value="0"></label>' : ''}
+      ${m.hasFlank ? '<label>Extra flank (nt) <input name="flank" type="number" min="0" max="5000" value="0"></label>' : ''}
       <label class="check"><input type="checkbox" name="stop"> include stop codon</label>
       <button class="btn small" type="button" data-act="all">Whole protein</button>
     </form>
@@ -2153,10 +2190,15 @@ async function renderMap(body, id, safeId, isStale) {
     <div id="map-domains"></div>`;
 
   const W = 900;
-  const total = m.whole ? dna.length : L * 3 + (m.hasStop ? 3 : 0);
-  const x = (nt) => (nt / total) * W;
+  const MIN_VIEW = 12; // nt; close enough to read every base
   const ntOf = (aa) => cdsStart + (aa - 1) * 3; // dna index where residue aa starts
   const clampAa = (n) => Math.max(1, Math.min(L, Math.round(n) || 1));
+  const overview = () => (m.hasFlank
+    ? { s: 0, e: dna.length }
+    : { s: 0, e: L * 3 + (m.hasStop ? 3 : 0) });
+  let view = overview();
+  const span = () => view.e - view.s;
+  const x = (nt) => ((nt - view.s) / span()) * W;
 
   // Lay overlapping domains on separate rows.
   const lanes = [];
@@ -2167,77 +2209,217 @@ async function renderMap(body, id, safeId, isStale) {
     return { ...d, lane, hue: DOMAIN_COLORS[i % DOMAIN_COLORS.length] };
   });
 
-  const niceStep = (span, want) => {
-    const raw = span / want;
+  const niceStep = (range, want) => {
+    const raw = Math.max(1e-9, range / want);
     const pow = 10 ** Math.floor(Math.log10(raw));
     return [1, 2, 5, 10].map((k) => k * pow).find((v) => v >= raw) || raw;
   };
 
+  const nuY = 38;
+  const proY = 38 + 78;
+  const laneH = 22;
+  const H = proY + 26 + Math.max(1, lanes.length) * laneH + 28;
+  const svgHost = $('#map-svg', body);
+  svgHost.innerHTML = `<svg viewBox="0 0 ${W + 20} ${H}" class="map-svg" tabindex="0" role="img" aria-label="Map of ${esc(id)} on ${esc(cb.acc)}">
+    <defs><clipPath id="map-clip"><rect x="0" y="0" width="${W}" height="${H}"/></clipPath></defs>
+    <g transform="translate(10,0)" id="map-g"></g></svg>`;
+  const svgEl = $('svg', svgHost);
+  const gEl = $('#map-g', svgEl);
+
+  const setView = (s0, e0) => {
+    const full = dna.length;
+    const lo = m.hasFlank ? 0 : overview().s;
+    const hi = m.hasFlank ? full : overview().e;
+    let len = Math.max(MIN_VIEW, Math.min(hi - lo, e0 - s0));
+    let a = s0;
+    if (a < lo) a = lo;
+    if (a + len > hi) a = hi - len;
+    view = { s: a, e: a + len };
+    drawMap();
+  };
+  const zoomAt = (factor, anchorNt) => {
+    const len = Math.max(MIN_VIEW, span() * factor);
+    const frac = (anchorNt - view.s) / span();
+    setView(anchorNt - frac * len, anchorNt - frac * len + len);
+  };
+  const pan = (nt) => setView(view.s + nt, view.e + nt);
+
   const drawMap = () => {
-    const nuY = 38;
-    const proY = 38 + 78;
-    const laneH = 22;
-    const H = proY + 26 + Math.max(1, lanes.length) * laneH + 28;
+    const sp = span();
+    const px = W / sp; // pixels per nt
+    const showBases = px >= 6.5;
+    const showResidues = px * 3 >= 11;
+    const first = Math.max(0, Math.floor(view.s));
+    const last = Math.min(dna.length, Math.ceil(view.e));
+    const cdsEnd = cdsStart + L * 3 + (m.hasStop ? 3 : 0);
     const a0 = x(ntOf(sel.from));
     const a1 = x(ntOf(sel.to) + 3 + (sel.stop && sel.to === L ? 3 : 0));
-    let svg = `<svg viewBox="0 0 ${W + 20} ${H}" class="map-svg" role="img" aria-label="Map of ${esc(id)} on ${esc(cb.acc)}"><g transform="translate(10,0)">`;
+    const dnaBar = m.hasFlank ? { s: 0, e: dna.length } : { s: 0, e: cdsEnd };
+    let g = '<g clip-path="url(#map-clip)">';
+
     // Nucleotide track
-    svg += `<text class="map-label" x="0" y="14">Nucleotide · ${esc(cb.acc)}</text>`;
-    svg += `<rect x="0" y="${nuY}" width="${W}" height="16" class="map-utr"/>`;
-    svg += `<rect x="${x(cdsStart)}" y="${nuY}" width="${Math.max(1, x(L * 3) - 0)}" height="16" class="map-cds"/>`;
-    const nStep = niceStep(total, 8);
-    for (let n = 0; n <= total; n += nStep) {
-      svg += `<line x1="${x(n)}" x2="${x(n)}" y1="${nuY - 4}" y2="${nuY}" class="map-tick"/><text class="map-tl" x="${x(n)}" y="${nuY - 7}" text-anchor="middle">${fmtN(m.whole ? n : n)}</text>`;
+    g += `<text class="map-label" x="0" y="14">Nucleotide · ${esc(cb.acc)}${cb.strand === '-' && m.hasFlank ? ' (reverse complement)' : ''}</text>`;
+    g += `<rect x="${x(dnaBar.s)}" y="${nuY}" width="${x(dnaBar.e) - x(dnaBar.s)}" height="16" class="map-utr"/>`;
+    g += `<rect x="${x(cdsStart)}" y="${nuY}" width="${Math.max(1, x(cdsEnd) - x(cdsStart))}" height="16" class="map-cds"/>`;
+    const nStep = niceStep(sp, 9);
+    const tickLabel = (i) => (m.origin == null ? i - cdsStart + 1 : m.origin + m.dir * i);
+    for (let n = Math.ceil(view.s / nStep) * nStep; n <= view.e; n += nStep) {
+      g += `<line x1="${x(n)}" x2="${x(n)}" y1="${nuY - 4}" y2="${nuY}" class="map-tick"/><text class="map-tl" x="${x(n)}" y="${nuY - 7}" text-anchor="middle">${fmtN(tickLabel(n))}</text>`;
     }
+    if (showBases) {
+      for (let i = first; i < last; i++) {
+        const inCds = i >= cdsStart && i < cdsEnd;
+        g += `<text class="map-base${inCds ? ' in-cds' : ''}" x="${x(i + 0.5)}" y="${nuY + 12.5}" text-anchor="middle">${dna[i]}</text>`;
+      }
+    }
+
     // Protein track
-    svg += `<text class="map-label" x="0" y="${proY - 14}">Protein · ${fmtN(L)} aa</text>`;
-    svg += `<rect x="${x(cdsStart)}" y="${proY}" width="${x(L * 3)}" height="16" class="map-prot" id="map-prot"/>`;
-    const aStep = niceStep(L, 8);
-    for (let a = 0; a <= L; a += aStep) {
-      const px = x(cdsStart + a * 3);
-      svg += `<line x1="${px}" x2="${px}" y1="${proY + 16}" y2="${proY + 20}" class="map-tick"/><text class="map-tl" x="${px}" y="${proY + 30}" text-anchor="middle">${a || 1}</text>`;
+    g += `<text class="map-label" x="0" y="${proY - 14}">Protein · ${fmtN(L)} aa</text>`;
+    g += `<rect x="${x(cdsStart)}" y="${proY}" width="${x(cdsStart + L * 3) - x(cdsStart)}" height="16" class="map-prot" id="map-prot"/>`;
+    const aaPer = 1 / 3;
+    const aStep = Math.max(1, Math.round(niceStep(sp * aaPer, 9)));
+    const aaFirst = Math.max(0, Math.ceil((view.s - cdsStart) / 3 / aStep) * aStep);
+    for (let a = aaFirst; a <= L && cdsStart + a * 3 <= view.e; a += aStep) {
+      const tx = x(cdsStart + a * 3);
+      g += `<line x1="${tx}" x2="${tx}" y1="${proY + 16}" y2="${proY + 20}" class="map-tick"/><text class="map-tl" x="${tx}" y="${proY + 30}" text-anchor="middle">${a || 1}</text>`;
+    }
+    if (showResidues) {
+      const aFrom = Math.max(1, Math.floor((view.s - cdsStart) / 3) + 1);
+      const aTo = Math.min(L, Math.ceil((view.e - cdsStart) / 3));
+      for (let a = aFrom; a <= aTo; a++) {
+        g += `<text class="map-aa" x="${x(ntOf(a) + 1.5)}" y="${proY + 12.5}" text-anchor="middle">${protein[a - 1]}</text>`;
+      }
     }
     for (const d of placed) {
       const dx = x(cdsStart + (d.from - 1) * 3);
-      const dw = Math.max(2, x((d.to - d.from + 1) * 3));
+      const dw = Math.max(2, x(cdsStart + d.to * 3) - dx);
+      if (dx > W || dx + dw < 0) continue;
       const dy = proY + 36 + d.lane * laneH;
-      svg += `<g class="map-dom" data-from="${d.from}" data-to="${d.to}" tabindex="0" role="button" aria-label="Select ${esc(d.name)}">
+      const lx = Math.max(dx, 0) + 4;
+      g += `<g class="map-dom" data-from="${d.from}" data-to="${d.to}" tabindex="0" role="button" aria-label="Select ${esc(d.name)}">
         <rect x="${dx}" y="${dy}" width="${dw}" height="${laneH - 4}" rx="3" style="fill:hsl(${d.hue} 60% 72%);stroke:hsl(${d.hue} 50% 40%)"/>
-        <text x="${dx + 4}" y="${dy + 12}" class="map-dl" ${dw < 60 ? 'style="display:none"' : ''}>${esc(d.name)}</text>
+        ${dx + dw - lx > 50 ? `<text x="${lx}" y="${dy + 12}" class="map-dl">${esc(d.name)}</text>` : ''}
         <title>${esc(d.name)} · aa ${d.from}–${d.to}</title></g>`;
     }
-    // Selection, joined across both tracks
-    svg += `<polygon class="map-link" points="${a0},${nuY + 16} ${a1},${nuY + 16} ${a1},${proY} ${a0},${proY}"/>`;
-    svg += `<rect class="map-sel" x="${a0}" y="${nuY}" width="${Math.max(1.5, a1 - a0)}" height="16"/>`;
-    svg += `<rect class="map-sel" x="${a0}" y="${proY}" width="${Math.max(1.5, a1 - a0)}" height="16"/>`;
-    svg += '</g></svg>';
-    $('#map-svg', body).innerHTML = svg;
 
-    // Drag on the protein bar to choose a range; click a domain to take it whole.
-    const svgEl = $('#map-svg svg', body);
-    const aaAt = (ev) => {
-      const r = svgEl.getBoundingClientRect();
-      const nt = ((ev.clientX - r.left) / r.width * (W + 20) - 10) / W * total;
-      return clampAa((nt - cdsStart) / 3 + 0.5);
-    };
-    let anchor = null;
-    svgEl.addEventListener('pointerdown', (ev) => {
-      if (ev.target.closest('.map-dom') || ev.target.closest('.map-ticks')) return;
-      anchor = aaAt(ev);
-      svgEl.setPointerCapture(ev.pointerId);
-    });
-    svgEl.addEventListener('pointermove', (ev) => {
-      if (anchor == null) return;
-      const here = aaAt(ev);
-      setSel(Math.min(anchor, here), Math.max(anchor, here));
-    });
-    svgEl.addEventListener('pointerup', () => { anchor = null; });
-    $$('.map-dom', svgEl).forEach((g) => {
-      const pick = () => setSel(Number(g.dataset.from), Number(g.dataset.to));
-      g.addEventListener('click', pick);
-      g.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); pick(); } });
-    });
+    // Selection, joined across both tracks
+    g += `<polygon class="map-link" points="${a0},${nuY + 16} ${a1},${nuY + 16} ${a1},${proY} ${a0},${proY}"/>`;
+    g += `<rect class="map-sel" x="${a0}" y="${nuY}" width="${Math.max(1.5, a1 - a0)}" height="16"/>`;
+    g += `<rect class="map-sel" x="${a0}" y="${proY}" width="${Math.max(1.5, a1 - a0)}" height="16"/>`;
+    if (zoomDrag) {
+      const za = x(Math.min(zoomDrag.a, zoomDrag.b));
+      const zb = x(Math.max(zoomDrag.a, zoomDrag.b));
+      g += `<rect class="map-zoombox" x="${za}" y="${nuY - 20}" width="${Math.max(1, zb - za)}" height="${H - nuY}"/>`;
+    }
+    g += '</g>';
+    gEl.innerHTML = g;
+
+    $('#map-view', body).textContent = `${m.origin == null ? 'coding nt' : 'nt'} ${fmtN(Math.round(tickLabel(Math.max(0, view.s))))}–${fmtN(Math.round(tickLabel(Math.min(dna.length - 1, view.e - 1))))} · ${fmtN(Math.round(sp))} nt shown`
+      + (showBases ? '' : px >= 3 ? ' · zoom in further to read the bases' : '');
+    $('[data-v="in"]', body).disabled = sp <= MIN_VIEW;
+    $('[data-v="out"]', body).disabled = sp >= overview().e - overview().s - 0.5;
+    $('[data-v="left"]', body).disabled = view.s <= (m.hasFlank ? 0 : overview().s);
+    $('[data-v="right"]', body).disabled = view.e >= (m.hasFlank ? dna.length : overview().e);
   };
+
+  // --- Pointer handling, bound once on the persistent svg ------------------------
+  let zoomDrag = null;
+  const ntAtClient = (ev) => {
+    const r = svgEl.getBoundingClientRect();
+    return view.s + (((ev.clientX - r.left) / r.width * (W + 20) - 10) / W) * span();
+  };
+  const yAtClient = (ev) => {
+    const r = svgEl.getBoundingClientRect();
+    return (ev.clientY - r.top) / r.height * H;
+  };
+  const aaAt = (ev) => clampAa((ntAtClient(ev) - cdsStart) / 3 + 0.5);
+
+  // Scrolling the page must keep working, so only ⌘/Ctrl + wheel (and pinch, which the
+  // browser reports the same way) zooms; sideways scrolling moves the view.
+  svgEl.addEventListener('wheel', (ev) => {
+    if (ev.ctrlKey || ev.metaKey) {
+      ev.preventDefault();
+      zoomAt(Math.exp(ev.deltaY * 0.01), ntAtClient(ev));
+    } else if (Math.abs(ev.deltaX) > Math.abs(ev.deltaY) || ev.shiftKey) {
+      ev.preventDefault();
+      pan(((ev.deltaX || ev.deltaY) / W) * span());
+    }
+  }, { passive: false });
+  svgEl.addEventListener('contextmenu', (ev) => ev.preventDefault());
+
+  let gesture = null;
+  svgEl.addEventListener('pointerdown', (ev) => {
+    if (ev.target.closest('.map-dom')) return;
+    svgEl.setPointerCapture(ev.pointerId);
+    if (ev.button === 2) {
+      const n = ntAtClient(ev);
+      gesture = { kind: 'zoom' };
+      zoomDrag = { a: n, b: n };
+    } else if (ev.button === 0 && Math.abs(yAtClient(ev) - (proY + 8)) <= 14) {
+      gesture = { kind: 'select', anchor: aaAt(ev) };
+      setSel(gesture.anchor, gesture.anchor);
+    } else if (ev.button === 0) {
+      gesture = { kind: 'pan', lastX: ev.clientX };
+      svgEl.classList.add('grabbing');
+    }
+  });
+  svgEl.addEventListener('pointermove', (ev) => {
+    if (!gesture) return;
+    if (gesture.kind === 'select') {
+      const here = aaAt(ev);
+      setSel(Math.min(gesture.anchor, here), Math.max(gesture.anchor, here));
+    } else if (gesture.kind === 'pan') {
+      const r = svgEl.getBoundingClientRect();
+      pan(-((ev.clientX - gesture.lastX) / r.width * (W + 20) / W) * span());
+      gesture.lastX = ev.clientX;
+    } else if (gesture.kind === 'zoom') {
+      zoomDrag.b = ntAtClient(ev);
+      drawMap();
+    }
+  });
+  const endGesture = () => {
+    if (gesture?.kind === 'zoom' && zoomDrag) {
+      const lo = Math.min(zoomDrag.a, zoomDrag.b);
+      const hi = Math.max(zoomDrag.a, zoomDrag.b);
+      zoomDrag = null;
+      if (hi - lo >= 3) setView(lo, hi); else drawMap();
+    }
+    gesture = null;
+    svgEl.classList.remove('grabbing');
+  };
+  svgEl.addEventListener('pointerup', endGesture);
+  svgEl.addEventListener('pointercancel', endGesture);
+  svgEl.addEventListener('click', (ev) => {
+    const dom = ev.target.closest('.map-dom');
+    if (dom) setSel(Number(dom.dataset.from), Number(dom.dataset.to));
+  });
+  svgEl.addEventListener('keydown', (ev) => {
+    const dom = ev.target.closest?.('.map-dom');
+    if (dom && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); setSel(Number(dom.dataset.from), Number(dom.dataset.to)); return; }
+    const mid = (view.s + view.e) / 2;
+    if (ev.key === 'ArrowLeft') { ev.preventDefault(); pan(-span() * 0.2); }
+    else if (ev.key === 'ArrowRight') { ev.preventDefault(); pan(span() * 0.2); }
+    else if (ev.key === '+' || ev.key === '=') zoomAt(1 / 2, mid);
+    else if (ev.key === '-') zoomAt(2, mid);
+    else if (ev.key === '0') setView(overview().s, overview().e);
+  });
+
+  $('#map-toolbar', body).addEventListener('click', (ev) => {
+    const v = ev.target.closest('[data-v]')?.dataset.v;
+    if (!v) return;
+    const mid = (view.s + view.e) / 2;
+    if (v === 'left') pan(-span() * 0.5);
+    else if (v === 'right') pan(span() * 0.5);
+    else if (v === 'in') zoomAt(1 / 2.5, mid);
+    else if (v === 'out') zoomAt(2.5, mid);
+    else if (v === 'reset') setView(overview().s, overview().e);
+    else if (v === 'sel') {
+      const lo = ntOf(sel.from) - sel.flank;
+      const hi = ntOf(sel.to) + 3 + sel.flank;
+      const pad = Math.max(6, (hi - lo) * 0.08);
+      setView(lo - pad, hi + pad);
+    }
+  });
 
   const selection = () => {
     const stop = sel.stop && sel.to === L && m.hasStop;
@@ -2249,7 +2431,7 @@ async function renderMap(body, id, safeId, isStale) {
   const drawOut = () => {
     const { nt, lo, hi, aa } = selection();
     const range = `${sel.from}–${sel.to}`;
-    const ntRange = m.whole ? `${fmtN(recPos(lo))}–${fmtN(hi)} of ${esc(cb.acc)}` : `${fmtN(lo - cdsStart + 1)}–${fmtN(hi - cdsStart)} of the coding sequence`;
+    const ntRange = m.origin != null ? `${coords(lo, hi).replace('-', '–')} of ${esc(cb.acc)}` : `${fmtN(lo - cdsStart + 1)}–${fmtN(hi - cdsStart)} of the coding sequence`;
     // Codons beneath their residues, in rows of 20.
     let grid = '';
     if (aa.length <= 900) {
@@ -2278,7 +2460,7 @@ async function renderMap(body, id, safeId, isStale) {
         ${m.whole ? '<button class="btn small" data-act="save-rec">Whole mRNA record</button>' : ''}
       </div>
       <div class="codon-grid">${grid}</div>`;
-    const ntHeader = `${cb.acc}:${m.whole ? `${recPos(lo)}-${hi}` : `${lo - cdsStart + 1}-${hi - cdsStart}`} (coding sequence for ${id} aa ${range}${cb.strand === '-' ? ', minus strand' : ''})`;
+    const ntHeader = `${cb.acc}:${coords(lo, hi)} (coding sequence for ${id} aa ${range}${strandNote})`;
     const aaHeader = `${id}:${range} aa`;
     const ntFa = toFasta([{ header: ntHeader, seq: nt }]);
     const aaFa = toFasta([{ header: aaHeader, seq: aa }]);
@@ -2298,9 +2480,9 @@ async function renderMap(body, id, safeId, isStale) {
   const rangeRecords = (from, to, name) => {
     const lo = Math.max(0, ntOf(from) - sel.flank);
     const hi = Math.min(dna.length, ntOf(to) + 3 + sel.flank);
-    const pos = m.whole ? `${lo + 1}-${hi}` : `${lo - cdsStart + 1}-${hi - cdsStart}`;
+    const pos = coords(lo, hi);
     return {
-      nt: { header: `${cb.acc}:${pos} ${name} (${id} aa ${from}-${to}${sel.flank ? `, +${sel.flank} nt flank` : ''})`, seq: dna.slice(lo, hi) },
+      nt: { header: `${cb.acc}:${pos} ${name} (${id} aa ${from}-${to}${sel.flank ? `, +${sel.flank} nt flank` : ''}${strandNote})`, seq: dna.slice(lo, hi) },
       aa: { header: `${id}:${from}-${to} ${name}`, seq: protein.slice(from - 1, to) },
     };
   };

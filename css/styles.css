@@ -450,3 +450,12 @@ textarea { resize: vertical; font-family: var(--mono); font-size: 0.85rem; }
 .swatch { display: inline-block; width: 12px; height: 12px; border: 1px solid; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
 .dom-actions { white-space: nowrap; }
 .dom-actions .btn { margin-right: 4px; }
+.map-toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 0; }
+.map-toolbar .btn[disabled] { opacity: 0.4; cursor: default; }
+.map-hint { flex-basis: 100%; }
+.map-svg { cursor: grab; }
+.map-svg.grabbing { cursor: grabbing; }
+.map-base { font-family: var(--mono); font-size: 11px; fill: var(--muted); pointer-events: none; }
+.map-base.in-cds { fill: #fff; font-weight: 600; }
+.map-aa { font-family: var(--mono); font-size: 11px; font-weight: 700; fill: var(--accent); pointer-events: none; }
+.map-zoombox { fill: #e0662b; opacity: 0.12; stroke: #e0662b; stroke-dasharray: 4 3; pointer-events: none; }
