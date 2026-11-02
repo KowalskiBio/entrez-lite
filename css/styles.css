@@ -466,3 +466,10 @@ textarea { resize: vertical; font-family: var(--mono); font-size: 0.85rem; }
 #seq-card .map-summary { margin: 0 0 10px; font-size: 0.85rem; }
 .seq-actions { display: flex; flex-direction: column; gap: 6px; }
 .seq-actions .btn { width: 100%; justify-content: center; }
+
+.map-pending { fill: repeating-linear-gradient(45deg, var(--border), var(--border) 4px, transparent 4px, transparent 8px); fill: var(--surface-2); stroke: var(--border); stroke-dasharray: 3 3; }
+.map-feat { cursor: pointer; }
+.map-feat polygon { fill: var(--surface-2); stroke: var(--muted); stroke-width: 1; }
+.map-feat:hover polygon, .map-feat:focus polygon { fill: var(--accent-weak); stroke: var(--accent); }
+.map-feat.ours polygon { fill: var(--accent-weak); stroke: var(--accent); stroke-width: 2; }
+.feat-info { margin: 8px 0; }

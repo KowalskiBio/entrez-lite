@@ -2134,8 +2134,8 @@ function proteinNucleotideViews(id, safeId) {
 
 // --- Protein <-> nucleotide map ------------------------------------------------
 
-// Sequence kept either side of a gene that sits inside a larger record.
-const MAP_FLANK = 3000;
+// Sequence kept loaded beyond what the map shows, and around a gene at first.
+const MAP_FLANK = 1000;
 const DOMAIN_COLORS = [200, 30, 140, 280, 340, 60, 170, 250];
 
 // Where a protein sits on the sequence that encodes it. Reads the CDS feature of the
@@ -2167,6 +2167,7 @@ async function loadProteinMap(id, doc) {
   let origin = null;
   let dir = 1;
   let hasFlank = false;
+  let rec = null; // the stretch of the source record held in `dna`, for a gene inside a larger record
   if (whole) {
     dna = parseFasta(await cachedFetch(`nuccore|${cb.acc}|fasta|all`, () => efetch('nuccore', cb.acc, 'fasta')))[0]?.seq || '';
     cdsStart = cb.parts[0].from - 1 + frame;
@@ -2184,6 +2185,7 @@ async function loadProteinMap(id, doc) {
       () => efetch('nuccore', cb.acc, 'fasta', { seq_start: a, seq_stop: b, strand: cb.strand === '-' ? 2 : 1 })))[0]?.seq || '';
     if (cb.strand === '-') { cdsStart = b - q.to + frame; origin = b; dir = -1; } else { cdsStart = q.from - a + frame; origin = a; }
     hasFlank = true;
+    rec = { len: recLen, lo: a, hi: b, dead: { left: false, right: false } };
   } else {
     const pieces = await Promise.all(cb.parts.map((q) => cachedFetch(`nuccore|${cb.acc}|fasta|${q.from}-${q.to}-${cb.strand}`,
       () => efetch('nuccore', cb.acc, 'fasta', { seq_start: q.from, seq_stop: q.to, strand: cb.strand === '-' ? 2 : 1 }))));
@@ -2197,10 +2199,54 @@ async function loadProteinMap(id, doc) {
   let mismatches = 0;
   for (let i = 1; i < protein.length; i++) if (translated[i] !== protein[i] && protein[i] !== 'X') mismatches++;
   return {
-    protein, domains, others, dna, cdsStart, cb, whole, table, mismatches, origin, dir, hasFlank,
+    protein, domains, others, dna, cdsStart, cb, whole, table, mismatches, origin, dir, hasFlank, rec,
     hasStop: /^(TAA|TAG|TGA)$/i.test(dna.slice(cdsStart + protein.length * 3, cdsStart + protein.length * 3 + 3)),
     checked: dna.length >= cdsStart + protein.length * 3 && table !== 4 && !/^(2|3|5|9|13|14|16|21|22|23|24|25)$/.test(String(table)),
   };
+}
+
+// Loads more of the source record on one side of what the map holds. `side` is as
+// drawn (left or right of the sequence on screen); on a minus-strand gene the screen
+// is the reverse complement, so left means higher record coordinates.
+async function extendProteinMap(m, side, want) {
+  const r = m.rec;
+  const minus = m.cb.strand === '-';
+  const growHigh = (side === 'left') === minus;
+  const avail = growHigh ? r.len - r.hi : r.lo - 1;
+  const n = Math.floor(Math.min(avail, want));
+  if (!(n > 0)) { r.dead[side] = true; return 0; }
+  const a = growHigh ? r.hi + 1 : r.lo - n;
+  const b = growHigh ? r.hi + n : r.lo - 1;
+  let seq;
+  try {
+    seq = parseFasta(await cachedFetch(`nuccore|${m.cb.acc}|fasta|${a}-${b}-${m.cb.strand}`,
+      () => efetch('nuccore', m.cb.acc, 'fasta', { seq_start: a, seq_stop: b, strand: minus ? 2 : 1 })))[0]?.seq || '';
+  } catch {
+    r.dead[side] = true;
+    return 0;
+  }
+  // A reply of any other length means NCBI did not read the range as asked.
+  if (seq.length !== n) { r.dead[side] = true; return 0; }
+  if (growHigh) r.hi = b; else r.lo = a;
+  if (side === 'left') {
+    m.dna = seq + m.dna;
+    m.cdsStart += seq.length;
+    m.origin = minus ? r.hi : r.lo;
+  } else {
+    m.dna += seq;
+  }
+  return seq.length;
+}
+
+// Genes (or, where a record has none, other annotated features) in the stretch held.
+async function loadMapFeatures(m) {
+  const { lo, hi } = m.rec;
+  const text = await cachedFetch(`nuccore|${m.cb.acc}|ft|${lo}-${hi}`,
+    () => efetch('nuccore', m.cb.acc, 'ft', { seq_start: lo, seq_stop: hi }));
+  const all = parseFeatureTable(text, lo - 1);
+  const genes = all.filter((f) => f.type === 'gene');
+  const shown = genes.length ? genes : all.filter((f) => /^(CDS|tRNA|rRNA|ncRNA|tmRNA|misc_RNA)$/.test(f.type));
+  return { all, shown };
 }
 
 async function renderMap(body, id, safeId, isStale) {
@@ -2214,7 +2260,10 @@ async function renderMap(body, id, safeId, isStale) {
   if (isStale()) return;
   if (m.error) { body.innerHTML = `<div class="notice">${esc(m.error)}</div>`; return; }
 
-  const { protein, domains, others, dna, cdsStart, cb } = m;
+  const { protein, domains, others, cb } = m;
+  // Both change as more of the record is loaded to the left or right.
+  let dna = m.dna;
+  let cdsStart = m.cdsStart;
   const L = protein.length;
   // Record coordinates of dna[lo, hi) as "a-b", lowest first, or coding-relative when the
   // CDS was joined from several pieces and the record has no single numbering.
@@ -2231,8 +2280,8 @@ async function renderMap(body, id, safeId, isStale) {
       <a href="#/record/nuccore/${encodeURIComponent(cb.acc)}">${esc(cb.acc)}</a>
       at ${cb.parts.map((q) => `${fmtN(q.from)}..${fmtN(q.to)}`).join(', ')}
       (${cb.strand === '-' ? 'minus' : 'plus'} strand${cb.parts.length > 1 ? `, ${cb.parts.length} exons joined` : ''}).
-      ${m.whole ? `The whole ${fmtN(dna.length)} nt record is loaded.`
-        : m.hasFlank ? `The source record is large, so ${fmtN(MAP_FLANK)} nt either side of the gene is loaded${cb.strand === '-' ? ', read as the reverse complement so the gene runs left to right' : ''}.`
+      ${m.whole ? `The whole ${fmtN(dna.length)} nt record is loaded. Beyond its ends the sequence is genomic and not part of this mRNA.`
+        : m.rec ? `The source record is large, so only the gene and ${fmtN(MAP_FLANK)} nt either side are loaded to start; moving the map past either end loads more, always keeping ${fmtN(MAP_FLANK)} nt ahead${cb.strand === '-' ? ' (shown as the reverse complement so the gene runs left to right)' : ''}.`
         : 'Only the coding sequence is shown; the source record is too large to show whole.'}</p>
     ${m.checked && m.mismatches > Math.max(2, L * 0.02)
       ? `<div class="notice">Translating this sequence gives ${m.mismatches} residues that differ from the protein. The genetic code or the coding location may not match, so check before ordering anything.</div>` : ''}
@@ -2244,9 +2293,10 @@ async function renderMap(body, id, safeId, isStale) {
       <button class="btn small" data-v="sel" title="Zoom to the selection">Zoom to selection</button>
       <button class="btn small" data-v="reset" title="Show the whole sequence">Reset</button>
       <span class="muted small" id="map-view"></span>
-      <span class="muted small map-hint">⌘/Ctrl + scroll or pinch zooms at the pointer · scroll sideways or drag the nucleotide bar to move · drag the protein bar to select · right-drag zooms to a region</span>
+      <span class="muted small map-hint">⌘/Ctrl + scroll or pinch zooms at the pointer · scroll sideways or drag the nucleotide bar to move, also past the gene · drag the protein bar to select · right-drag zooms to a region</span>
     </div>
     <div id="map-svg" class="map-wrap"></div>
+    <div id="map-feat-info"></div>
     <div class="panel-actions whole-actions">
       <b>Whole ${esc(id)}:</b>
       ${m.whole ? '<button class="btn small" data-whole="rec">mRNA with UTRs</button>' : ''}
@@ -2276,9 +2326,20 @@ async function renderMap(body, id, safeId, isStale) {
   const MIN_VIEW = 12; // nt; close enough to read every base
   const ntOf = (aa) => cdsStart + (aa - 1) * 3; // dna index where residue aa starts
   const clampAa = (n) => Math.max(1, Math.min(L, Math.round(n) || 1));
-  const overview = () => (m.hasFlank
-    ? { s: 0, e: dna.length }
-    : { s: 0, e: L * 3 + (m.hasStop ? 3 : 0) });
+  const cdsEndIdx = () => cdsStart + L * 3 + (m.hasStop ? 3 : 0);
+  const overview = () => (m.rec
+    ? { s: Math.max(0, cdsStart - MAP_FLANK), e: Math.min(dna.length, cdsEndIdx() + MAP_FLANK) }
+    : m.hasFlank ? { s: 0, e: dna.length } : { s: 0, e: L * 3 + (m.hasStop ? 3 : 0) });
+  // How far the view may go. With a record behind it the limit is the record's ends, not
+  // what is loaded yet.
+  const availSide = (side) => {
+    if (!m.rec || m.rec.dead[side]) return 0;
+    const growHigh = (side === 'left') === (cb.strand === '-');
+    return Math.min(1e9, growHigh ? m.rec.len - m.rec.hi : m.rec.lo - 1);
+  };
+  const bounds = () => (m.rec
+    ? { lo: -availSide('left'), hi: dna.length + availSide('right') }
+    : m.hasFlank ? { lo: 0, hi: dna.length } : { lo: overview().s, hi: overview().e });
   let view = overview();
   const span = () => view.e - view.s;
   const x = (nt) => ((nt - view.s) / span()) * W;
@@ -2301,24 +2362,81 @@ async function renderMap(body, id, safeId, isStale) {
   const nuY = 38;
   const proY = 38 + 78;
   const laneH = 22;
-  const H = proY + 26 + Math.max(1, lanes.length) * laneH + 28;
+  const annLaneH = 20;
+  let H = 0;
   const svgHost = $('#map-svg', body);
-  svgHost.innerHTML = `<svg viewBox="0 0 ${W + 20} ${H}" class="map-svg" tabindex="0" role="img" aria-label="Map of ${esc(id)} on ${esc(cb.acc)}">
-    <defs><clipPath id="map-clip"><rect x="0" y="0" width="${W}" height="${H}"/></clipPath></defs>
+  svgHost.innerHTML = `<svg class="map-svg" tabindex="0" role="img" aria-label="Map of ${esc(id)} on ${esc(cb.acc)}">
+    <defs><clipPath id="map-clip"><rect id="map-clip-rect" x="0" y="0" width="${W}" height="10"/></clipPath></defs>
     <g transform="translate(10,0)" id="map-g"></g></svg>`;
   const svgEl = $('svg', svgHost);
   const gEl = $('#map-g', svgEl);
 
+  // Neighbouring annotation: record coordinates, with a row for each overlap.
+  let neighbours = { all: [], shown: [] };
+  const layoutNeighbours = () => {
+    const ends = [];
+    neighbours.laid = neighbours.shown.slice().sort((a, b) => a.lo - b.lo).map((f) => {
+      let lane = ends.findIndex((e) => e < f.lo);
+      if (lane < 0) lane = ends.length;
+      ends[lane] = f.hi;
+      return { f, lane };
+    });
+    neighbours.lanes = ends.length;
+  };
+  const cdsRec = { lo: cb.parts[0].from, hi: cb.parts[cb.parts.length - 1].to };
+  const isOurs = (f) => f.strand === cb.strand && f.lo <= Math.min(cdsRec.lo, cdsRec.hi) && f.hi >= Math.max(cdsRec.lo, cdsRec.hi);
+  // Record coordinates (1-based, inclusive) to dna indices (end exclusive), as drawn.
+  const idxOf = (f) => (m.dir > 0 ? [f.lo - m.origin, f.hi - m.origin + 1] : [m.origin - f.hi, m.origin - f.lo + 1]);
+
   const setView = (s0, e0) => {
-    const full = dna.length;
-    const lo = m.hasFlank ? 0 : overview().s;
-    const hi = m.hasFlank ? full : overview().e;
-    let len = Math.max(MIN_VIEW, Math.min(hi - lo, e0 - s0));
+    const { lo, hi } = bounds();
+    const len = Math.max(MIN_VIEW, Math.min(hi - lo, e0 - s0));
     let a = s0;
     if (a < lo) a = lo;
     if (a + len > hi) a = hi - len;
     view = { s: a, e: a + len };
     drawMap();
+    ensureLoaded();
+  };
+
+  // Keep MAP_FLANK nt of sequence loaded beyond the view on both sides. A left load
+  // puts new bases in front, so everything keyed by position moves up by that much.
+  let loading = false;
+  const ensureLoaded = async () => {
+    if (!m.rec || loading) return;
+    loading = true;
+    let changed = false;
+    try {
+      for (;;) {
+        let did = false;
+        if (view.s < MAP_FLANK && !m.rec.dead.left) {
+          const n = await extendProteinMap(m, 'left', Math.max(MAP_FLANK - view.s, MAP_FLANK));
+          if (n) {
+            dna = m.dna;
+            cdsStart = m.cdsStart;
+            view = { s: view.s + n, e: view.e + n };
+            if (zoomDrag) { zoomDrag.a += n; zoomDrag.b += n; }
+            did = true;
+          }
+        }
+        if (view.e + MAP_FLANK > dna.length && !m.rec.dead.right) {
+          const n = await extendProteinMap(m, 'right', Math.max(view.e + MAP_FLANK - dna.length, MAP_FLANK));
+          if (n) { dna = m.dna; did = true; }
+        }
+        if (!did) break;
+        changed = true;
+        drawMap();
+      }
+    } finally {
+      loading = false;
+    }
+    if (changed || !neighbours.laid) {
+      try {
+        neighbours = await loadMapFeatures(m);
+        layoutNeighbours();
+      } catch { /* the map still works without annotation */ }
+      if (body.isConnected) drawMap();
+    }
   };
   const zoomAt = (factor, anchorNt) => {
     const len = Math.max(MIN_VIEW, span() * factor);
@@ -2339,12 +2457,26 @@ async function renderMap(body, id, safeId, isStale) {
     const a0 = x(ext.lo);
     const a1 = x(ext.hi);
     const dnaBar = m.hasFlank ? { s: 0, e: dna.length } : { s: 0, e: cdsEnd };
+    const annY = proY + 36 + Math.max(1, lanes.length) * laneH + 22;
+    H = m.rec ? annY + Math.max(1, neighbours.lanes || 1) * annLaneH + 12 : proY + 26 + Math.max(1, lanes.length) * laneH + 28;
+    svgEl.setAttribute('viewBox', `0 0 ${W + 20} ${H}`);
+    $('#map-clip-rect', svgEl).setAttribute('height', H);
     let g = '<g clip-path="url(#map-clip)">';
 
     // Nucleotide track
     g += `<text class="map-label" x="0" y="14">Nucleotide · ${esc(cb.acc)}${cb.strand === '-' && m.hasFlank ? ' (reverse complement)' : ''}</text>`;
     g += `<rect x="${x(dnaBar.s)}" y="${nuY}" width="${x(dnaBar.e) - x(dnaBar.s)}" height="16" class="map-utr"/>`;
     g += `<rect x="${x(cdsStart)}" y="${nuY}" width="${Math.max(1, x(cdsEnd) - x(cdsStart))}" height="16" class="map-cds"/>`;
+    // Stretches the view has reached that are not loaded yet (or are past the record's end).
+    if (m.rec) {
+      const pend = (a, b, side) => {
+        if (b - a <= 0) return;
+        g += `<rect x="${x(a)}" y="${nuY}" width="${x(b) - x(a)}" height="16" class="map-pending"/>`
+          + `<text class="map-tl" x="${(x(a) + x(b)) / 2}" y="${nuY + 12}" text-anchor="middle">${m.rec.dead[side] ? 'end of record' : 'loading…'}</text>`;
+      };
+      pend(view.s, Math.min(0, view.e), 'left');
+      pend(Math.max(dna.length, view.s), view.e, 'right');
+    }
     const nStep = niceStep(sp, 9);
     const tickLabel = (i) => (m.origin == null ? i - cdsStart + 1 : m.origin + m.dir * i);
     for (let n = Math.ceil(view.s / nStep) * nStep; n <= view.e; n += nStep) {
@@ -2386,6 +2518,29 @@ async function renderMap(body, id, safeId, isStale) {
         <title>${esc(d.name)} · aa ${d.from}–${d.to}</title></g>`;
     }
 
+    // Annotation around the gene, from the record's own feature table
+    if (m.rec) {
+      g += `<text class="map-label" x="0" y="${annY - 8}">Annotated genes on ${esc(cb.acc)}${neighbours.laid ? '' : ' · loading…'}</text>`;
+      (neighbours.laid || []).forEach(({ f, lane }, i) => {
+        const [a, b] = idxOf(f);
+        const xa = x(a);
+        const w = Math.max(3, x(b) - xa);
+        if (xa > W || xa + w < 0) return;
+        const fwd = (f.strand === '+') === (m.dir > 0);
+        const y = annY + lane * annLaneH;
+        const h = annLaneH - 6;
+        const head = Math.min(8, w * 0.45);
+        const pts = fwd
+          ? `${xa},${y} ${xa + w - head},${y} ${xa + w},${y + h / 2} ${xa + w - head},${y + h} ${xa},${y + h}`
+          : `${xa + w},${y} ${xa + head},${y} ${xa},${y + h / 2} ${xa + head},${y + h} ${xa + w},${y + h}`;
+        const name = f.q.gene?.[0] || f.q.locus_tag?.[0] || f.type;
+        g += `<g class="map-feat${isOurs(f) ? ' ours' : ''}" data-i="${neighbours.shown.indexOf(f)}" tabindex="0" role="button" aria-label="${esc(name)}">
+          <polygon points="${pts}"/>
+          ${w > 34 ? `<text x="${Math.max(xa, 0) + 4}" y="${y + h - 3}" class="map-dl">${esc(name)}</text>` : ''}
+          <title>${esc(name)}${f.q.product?.[0] ? ' · ' + esc(f.q.product[0]) : ''} · ${f.lo}..${f.hi} (${f.strand})</title></g>`;
+      });
+    }
+
     // Selection, joined across both tracks
     g += `<polygon class="map-link" points="${a0},${nuY + 16} ${a1},${nuY + 16} ${a1},${proY} ${a0},${proY}"/>`;
     g += `<rect class="map-sel" x="${a0}" y="${nuY}" width="${Math.max(1.5, a1 - a0)}" height="16"/>`;
@@ -2401,10 +2556,45 @@ async function renderMap(body, id, safeId, isStale) {
     $('#map-view', body).textContent = `${m.origin == null ? 'coding nt' : 'nt'} ${fmtN(Math.round(tickLabel(Math.max(0, view.s))))}–${fmtN(Math.round(tickLabel(Math.min(dna.length - 1, view.e - 1))))} · ${fmtN(Math.round(sp))} nt shown`
       + (showBases ? '' : px >= 3 ? ' · zoom in further to read the bases' : '');
     $('[data-v="in"]', body).disabled = sp <= MIN_VIEW;
-    $('[data-v="out"]', body).disabled = sp >= overview().e - overview().s - 0.5;
-    $('[data-v="left"]', body).disabled = view.s <= (m.hasFlank ? 0 : overview().s);
-    $('[data-v="right"]', body).disabled = view.e >= (m.hasFlank ? dna.length : overview().e);
+    const bd = bounds();
+    $('[data-v="out"]', body).disabled = sp >= bd.hi - bd.lo - 0.5;
+    $('[data-v="left"]', body).disabled = view.s <= bd.lo;
+    $('[data-v="right"]', body).disabled = view.e >= bd.hi;
   };
+
+  // A click on an annotated gene: what it is, a link to its protein's own map, and its
+  // sequence in its own sense (so a gene on the other strand is reverse-complemented).
+  function showNeighbour(f) {
+    const box = $('#map-feat-info', body);
+    if (!f) { box.innerHTML = ''; return; }
+    const key = f.q.locus_tag?.[0] || f.q.gene?.[0] || '';
+    const cds = key ? neighbours.all.filter((c) => c.type === 'CDS' && (c.q.locus_tag?.[0] || c.q.gene?.[0]) === key && c.lo >= f.lo && c.hi <= f.hi) : [];
+    const product = f.q.product?.[0] || cds.find((c) => c.q.product)?.q.product[0] || f.q.note?.[0] || '';
+    const proteins = [...new Set(cds.map((c) => cleanSeqId(c.q.protein_id?.[0] || '')).filter(Boolean))];
+    const name = f.q.gene?.[0] || f.q.locus_tag?.[0] || f.type;
+    const [a, b] = idxOf(f);
+    const fwd = (f.strand === '+') === (m.dir > 0);
+    const seq = () => {
+      const part = dna.slice(Math.max(0, a), Math.min(dna.length, b));
+      return fwd ? part : reverseComplement(part);
+    };
+    box.innerHTML = `<div class="notice feat-info">
+      <b>${esc(name)}</b> <span class="muted">${esc(f.type)}</span>${product ? ` · ${esc(product)}` : ''}
+      <div class="muted small">${esc(cb.acc)}:${fmtN(f.lo)}..${fmtN(f.hi)} (${f.strand === '-' ? 'minus' : 'plus'} strand) · ${fmtN(f.hi - f.lo + 1)} nt${isOurs(f) ? ' · this protein’s own gene' : ''}</div>
+      <div class="panel-actions" style="justify-content:flex-start;margin:6px 0 0">
+        <button class="btn small" data-fi="zoom">Zoom to it</button>
+        <button class="btn small" data-fi="save">Download nucleotide FASTA</button>
+        ${proteins.map((p) => `<a class="btn small" href="#/record/protein/${encodeURIComponent(p)}?tab=map">Map of ${esc(p)}</a>`).join('')}
+      </div></div>`;
+    $('[data-fi="zoom"]', box).addEventListener('click', () => {
+      const pad = Math.max(40, (b - a) * 0.1);
+      setView(a - pad, b + pad);
+    });
+    $('[data-fi="save"]', box).addEventListener('click', () => {
+      const header = `${cb.acc}:${f.lo}-${f.hi}${f.strand === '-' ? ' (minus strand)' : ''} ${name}${product ? ' ' + product : ''}`;
+      saveFile(`${safeId}_${name.replace(/[^\w.-]/g, '_')}_${f.lo}-${f.hi}.fasta`, toFasta([{ header, seq: seq() }]));
+    });
+  }
 
   // --- Pointer handling, bound once on the persistent svg ------------------------
   let zoomDrag = null;
@@ -2433,7 +2623,7 @@ async function renderMap(body, id, safeId, isStale) {
 
   let gesture = null;
   svgEl.addEventListener('pointerdown', (ev) => {
-    if (ev.target.closest('.map-dom')) return;
+    if (ev.target.closest('.map-dom, .map-feat')) return;
     svgEl.setPointerCapture(ev.pointerId);
     if (ev.button === 2) {
       const n = ntAtClient(ev);
@@ -2476,10 +2666,14 @@ async function renderMap(body, id, safeId, isStale) {
   svgEl.addEventListener('click', (ev) => {
     const dom = ev.target.closest('.map-dom');
     if (dom) setSel(Number(dom.dataset.from), Number(dom.dataset.to));
+    const feat = ev.target.closest('.map-feat');
+    if (feat) showNeighbour(neighbours.shown[Number(feat.dataset.i)]);
   });
   svgEl.addEventListener('keydown', (ev) => {
     const dom = ev.target.closest?.('.map-dom');
     if (dom && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); setSel(Number(dom.dataset.from), Number(dom.dataset.to)); return; }
+    const feat = ev.target.closest?.('.map-feat');
+    if (feat && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); showNeighbour(neighbours.shown[Number(feat.dataset.i)]); return; }
     const mid = (view.s + view.e) / 2;
     if (ev.key === 'ArrowLeft') { ev.preventDefault(); pan(-span() * 0.2); }
     else if (ev.key === 'ArrowRight') { ev.preventDefault(); pan(span() * 0.2); }
@@ -2649,6 +2843,7 @@ async function renderMap(body, id, safeId, isStale) {
   drawMap();
   drawOut();
   drawDomains();
+  ensureLoaded();
 }
 
 function summaryTabHtml(db, doc) {
