@@ -68,3 +68,28 @@ test('cleanSeqId strips database prefixes', () => {
   assert.equal(cleanSeqId('gb|AAA12345.1|'), 'AAA12345.1');
   assert.equal(cleanSeqId('XP_1.1'), 'XP_1.1');
 });
+
+const { parseCodedBy, translateDna, reverseComplement, proteinDomains } = loadEutils();
+
+test('coded_by places a protein on its mRNA, on the minus strand, or across exons', () => {
+  assert.deepEqual(parseCodedBy('NM_000546.6:143..1324'),
+    { acc: 'NM_000546.6', strand: '+', parts: [{ from: 143, to: 1324 }] });
+  assert.deepEqual(parseCodedBy('complement(NZ_CP027720.1:<100..>400)'),
+    { acc: 'NZ_CP027720.1', strand: '-', parts: [{ from: 100, to: 400 }] });
+  // A minus-strand join is written in ascending order; transcript order is the reverse.
+  assert.deepEqual(parseCodedBy('complement(join(NC_1.1:10..20,\n NC_1.1:30..40))').parts,
+    [{ from: 30, to: 40 }, { from: 10, to: 20 }]);
+  assert.equal(parseCodedBy('join(AB1.1:1..5,CD2.1:1..5)'), null);
+  assert.equal(parseCodedBy(''), null);
+});
+
+test('a coding sequence translates to its protein, and a reverse complement round-trips', () => {
+  assert.equal(translateDna('ATGGAGGAGCCGCAGTAA'), 'MEEPQ*');
+  assert.equal(reverseComplement('ATGC'), 'GCAT');
+});
+
+test('only regions with a conserved-domain cross-reference count as domains', () => {
+  const ft = '>Feature ref|X|\n1\t393\tProtein\n6\t30\tRegion\n\t\t\tnote\tP53 transactivation motif\n\t\t\tdb_xref\tCDD:462520\n1\t44\tRegion\n\t\t\tnote\tTransactivation\n';
+  assert.deepEqual(proteinDomains(parseFeatureTable(ft)),
+    [{ name: 'P53 transactivation motif', cdd: '462520', note: 'P53 transactivation motif', from: 6, to: 30 }]);
+});

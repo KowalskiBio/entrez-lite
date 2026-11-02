@@ -859,7 +859,7 @@ async function renderRecord(db, id, params, token) {
 
   const tabs = isMaster ? [['contigs', 'Contigs'], ['genbank', 'GenBank']]
     : isSeq
-    ? [['genbank', db === 'protein' ? 'GenPept' : 'GenBank'], ['fasta', 'FASTA'], ['features', 'Features'], ...(db === 'nuccore' ? [['cds', 'CDS']] : [])]
+    ? [['genbank', db === 'protein' ? 'GenPept' : 'GenBank'], ['fasta', 'FASTA'], ['features', 'Features'], ...(db === 'nuccore' ? [['cds', 'CDS']] : [['map', 'Map']])]
     : [['summary', 'Summary'], ...(db === 'pubmed' ? [['abstract', 'Abstract']] : [])];
   const defaultTab = isMaster ? 'contigs' : isSeq ? (shownLen > BIG_RECORD ? 'features' : 'genbank') : 'summary';
   let tab = tabs.some(([t]) => t === params.get('tab')) ? params.get('tab') : defaultTab;
@@ -1931,6 +1931,10 @@ async function renderTab(db, id, doc, tab, region, hasRegion, shownLen, token) {
       body.innerHTML = summaryTabHtml(db, doc);
       return;
     }
+    if (tab === 'map') {
+      await renderMap(body, id, safeId, isStale);
+      return;
+    }
     if (tab === 'contigs') {
       await renderContigsTab(body, id, doc, isStale);
       return;
@@ -2054,6 +2058,323 @@ function proteinFactsHtml(db, doc) {
   return `${intro}<h3>Details</h3><table class="kv">${body}</table>`;
 }
 
+// --- Protein <-> nucleotide map ------------------------------------------------
+
+const DOMAIN_COLORS = [200, 30, 140, 280, 340, 60, 170, 250];
+
+// Where a protein sits on the sequence that encodes it. Reads the CDS feature of the
+// GenPept record (coded_by), fetches that nucleotide sequence, and returns it with the
+// coding start inside it. A small record (an mRNA) comes whole, so the UTRs are there
+// to cut from; a large one (a genome) comes as the coding pieces only.
+async function loadProteinMap(id, doc) {
+  const gp = await cachedFetch(`protein|${id}|gb|all`, () => efetch('protein', id, 'gp'));
+  const codedBy = gp.match(/\/coded_by="([^"]*)"/)?.[1];
+  if (!codedBy) return { error: 'This protein record does not say which nucleotide sequence encodes it (records from UniProt or PDB do not).' };
+  const cb = parseCodedBy(codedBy);
+  if (!cb) return { error: `The coding location “${codedBy.replace(/\s+/g, '')}” cannot be placed on one sequence.` };
+  const frame = Number(gp.match(/\/codon_start=(\d)/)?.[1] || 1) - 1;
+
+  const [ft, fa] = await Promise.all([
+    cachedFetch(`protein|${id}|ft|all`, () => efetch('protein', id, 'ft')),
+    cachedFetch(`protein|${id}|fasta|all`, () => efetch('protein', id, 'fasta')),
+  ]);
+  const protein = parseFasta(fa)[0]?.seq || '';
+  const domains = proteinDomains(parseFeatureTable(ft));
+
+  let whole = false;
+  if (cb.parts.length === 1 && cb.strand === '+') {
+    try { whole = Number((await getSummary('nuccore', cb.acc)).slen) <= 100_000; } catch { /* fall back to the coding piece */ }
+  }
+  let dna;
+  let cdsStart;
+  if (whole) {
+    dna = parseFasta(await cachedFetch(`nuccore|${cb.acc}|fasta|all`, () => efetch('nuccore', cb.acc, 'fasta')))[0]?.seq || '';
+    cdsStart = cb.parts[0].from - 1 + frame;
+  } else {
+    const pieces = await Promise.all(cb.parts.map((q) => cachedFetch(`nuccore|${cb.acc}|fasta|${q.from}-${q.to}-${cb.strand}`,
+      () => efetch('nuccore', cb.acc, 'fasta', { seq_start: q.from, seq_stop: q.to, strand: cb.strand === '-' ? 2 : 1 }))));
+    dna = pieces.map((t) => parseFasta(t)[0]?.seq || '').join('');
+    cdsStart = frame;
+  }
+  const coding = dna.slice(cdsStart, cdsStart + protein.length * 3 + 3);
+  const table = Number(gp.match(/\/transl_table=(\d+)/)?.[1] || 1);
+  const translated = translateDna(coding).replace(/\*$/, '');
+  // A GTG or TTG start is still translated as M in the protein, so skip the first residue.
+  let mismatches = 0;
+  for (let i = 1; i < protein.length; i++) if (translated[i] !== protein[i] && protein[i] !== 'X') mismatches++;
+  return {
+    protein, domains, dna, cdsStart, cb, whole, table, mismatches,
+    hasStop: /^(TAA|TAG|TGA)$/i.test(dna.slice(cdsStart + protein.length * 3, cdsStart + protein.length * 3 + 3)),
+    checked: dna.length >= cdsStart + protein.length * 3 && table !== 4 && !/^(2|3|5|9|13|14|16|21|22|23|24|25)$/.test(String(table)),
+  };
+}
+
+async function renderMap(body, id, safeId, isStale) {
+  let m;
+  try {
+    m = await loadProteinMap(id);
+  } catch (e) {
+    if (!isStale()) body.innerHTML = errorHtml(e);
+    return;
+  }
+  if (isStale()) return;
+  if (m.error) { body.innerHTML = `<div class="notice">${esc(m.error)}</div>`; return; }
+
+  const { protein, domains, dna, cdsStart, cb } = m;
+  const L = protein.length;
+  // Position of dna index i (0-based) in the source record; only meaningful for a whole record.
+  const recPos = (i) => i + 1;
+  const sel = { from: 1, to: L, flank: 0, stop: false };
+
+  body.innerHTML = `
+    <p class="muted stats">${esc(id)} · ${fmtN(L)} aa, encoded by
+      <a href="#/record/nuccore/${encodeURIComponent(cb.acc)}">${esc(cb.acc)}</a>
+      ${m.whole ? `at ${fmtN(cb.parts[0].from)}..${fmtN(cb.parts[0].to)} of ${fmtN(dna.length)} nt` : cb.parts.map((q) => `${fmtN(q.from)}..${fmtN(q.to)}`).join(', ')}
+      (${cb.strand === '-' ? 'minus' : 'plus'} strand${cb.parts.length > 1 ? `, ${cb.parts.length} exons joined` : ''}).
+      ${m.whole ? '' : 'Only the coding sequence is shown; the source record is too large to show whole.'}</p>
+    ${m.checked && m.mismatches > Math.max(2, L * 0.02)
+      ? `<div class="notice">Translating this sequence gives ${m.mismatches} residues that differ from the protein. The genetic code or the coding location may not match, so check before ordering anything.</div>` : ''}
+    <div id="map-svg" class="map-wrap"></div>
+    <div class="panel-actions whole-actions">
+      <b>Whole ${esc(id)}:</b>
+      ${m.whole ? '<button class="btn small" data-whole="rec">mRNA with UTRs</button>' : ''}
+      <button class="btn small" data-whole="cds">Coding sequence (CDS)</button>
+      <button class="btn small" data-whole="aa">Protein</button>
+    </div>
+    <form class="map-controls" id="map-form">
+      <label>From aa <input name="from" type="number" min="1" max="${L}" value="1"></label>
+      <label>to aa <input name="to" type="number" min="1" max="${L}" value="${L}"></label>
+      ${m.whole ? '<label>Extra flank (nt) <input name="flank" type="number" min="0" max="5000" value="0"></label>' : ''}
+      <label class="check"><input type="checkbox" name="stop"> include stop codon</label>
+      <button class="btn small" type="button" data-act="all">Whole protein</button>
+    </form>
+    <div id="map-out"></div>
+    <h3>Domains</h3>
+    <div id="map-domains"></div>`;
+
+  const W = 900;
+  const total = m.whole ? dna.length : L * 3 + (m.hasStop ? 3 : 0);
+  const x = (nt) => (nt / total) * W;
+  const ntOf = (aa) => cdsStart + (aa - 1) * 3; // dna index where residue aa starts
+  const clampAa = (n) => Math.max(1, Math.min(L, Math.round(n) || 1));
+
+  // Lay overlapping domains on separate rows.
+  const lanes = [];
+  const placed = domains.map((d, i) => {
+    let lane = lanes.findIndex((end) => end < d.from);
+    if (lane < 0) lane = lanes.length;
+    lanes[lane] = d.to;
+    return { ...d, lane, hue: DOMAIN_COLORS[i % DOMAIN_COLORS.length] };
+  });
+
+  const niceStep = (span, want) => {
+    const raw = span / want;
+    const pow = 10 ** Math.floor(Math.log10(raw));
+    return [1, 2, 5, 10].map((k) => k * pow).find((v) => v >= raw) || raw;
+  };
+
+  const drawMap = () => {
+    const nuY = 38;
+    const proY = 38 + 78;
+    const laneH = 22;
+    const H = proY + 26 + Math.max(1, lanes.length) * laneH + 28;
+    const a0 = x(ntOf(sel.from));
+    const a1 = x(ntOf(sel.to) + 3 + (sel.stop && sel.to === L ? 3 : 0));
+    let svg = `<svg viewBox="0 0 ${W + 20} ${H}" class="map-svg" role="img" aria-label="Map of ${esc(id)} on ${esc(cb.acc)}"><g transform="translate(10,0)">`;
+    // Nucleotide track
+    svg += `<text class="map-label" x="0" y="14">Nucleotide · ${esc(cb.acc)}</text>`;
+    svg += `<rect x="0" y="${nuY}" width="${W}" height="16" class="map-utr"/>`;
+    svg += `<rect x="${x(cdsStart)}" y="${nuY}" width="${Math.max(1, x(L * 3) - 0)}" height="16" class="map-cds"/>`;
+    const nStep = niceStep(total, 8);
+    for (let n = 0; n <= total; n += nStep) {
+      svg += `<line x1="${x(n)}" x2="${x(n)}" y1="${nuY - 4}" y2="${nuY}" class="map-tick"/><text class="map-tl" x="${x(n)}" y="${nuY - 7}" text-anchor="middle">${fmtN(m.whole ? n : n)}</text>`;
+    }
+    // Protein track
+    svg += `<text class="map-label" x="0" y="${proY - 14}">Protein · ${fmtN(L)} aa</text>`;
+    svg += `<rect x="${x(cdsStart)}" y="${proY}" width="${x(L * 3)}" height="16" class="map-prot" id="map-prot"/>`;
+    const aStep = niceStep(L, 8);
+    for (let a = 0; a <= L; a += aStep) {
+      const px = x(cdsStart + a * 3);
+      svg += `<line x1="${px}" x2="${px}" y1="${proY + 16}" y2="${proY + 20}" class="map-tick"/><text class="map-tl" x="${px}" y="${proY + 30}" text-anchor="middle">${a || 1}</text>`;
+    }
+    for (const d of placed) {
+      const dx = x(cdsStart + (d.from - 1) * 3);
+      const dw = Math.max(2, x((d.to - d.from + 1) * 3));
+      const dy = proY + 36 + d.lane * laneH;
+      svg += `<g class="map-dom" data-from="${d.from}" data-to="${d.to}" tabindex="0" role="button" aria-label="Select ${esc(d.name)}">
+        <rect x="${dx}" y="${dy}" width="${dw}" height="${laneH - 4}" rx="3" style="fill:hsl(${d.hue} 60% 72%);stroke:hsl(${d.hue} 50% 40%)"/>
+        <text x="${dx + 4}" y="${dy + 12}" class="map-dl" ${dw < 60 ? 'style="display:none"' : ''}>${esc(d.name)}</text>
+        <title>${esc(d.name)} · aa ${d.from}–${d.to}</title></g>`;
+    }
+    // Selection, joined across both tracks
+    svg += `<polygon class="map-link" points="${a0},${nuY + 16} ${a1},${nuY + 16} ${a1},${proY} ${a0},${proY}"/>`;
+    svg += `<rect class="map-sel" x="${a0}" y="${nuY}" width="${Math.max(1.5, a1 - a0)}" height="16"/>`;
+    svg += `<rect class="map-sel" x="${a0}" y="${proY}" width="${Math.max(1.5, a1 - a0)}" height="16"/>`;
+    svg += '</g></svg>';
+    $('#map-svg', body).innerHTML = svg;
+
+    // Drag on the protein bar to choose a range; click a domain to take it whole.
+    const svgEl = $('#map-svg svg', body);
+    const aaAt = (ev) => {
+      const r = svgEl.getBoundingClientRect();
+      const nt = ((ev.clientX - r.left) / r.width * (W + 20) - 10) / W * total;
+      return clampAa((nt - cdsStart) / 3 + 0.5);
+    };
+    let anchor = null;
+    svgEl.addEventListener('pointerdown', (ev) => {
+      if (ev.target.closest('.map-dom') || ev.target.closest('.map-ticks')) return;
+      anchor = aaAt(ev);
+      svgEl.setPointerCapture(ev.pointerId);
+    });
+    svgEl.addEventListener('pointermove', (ev) => {
+      if (anchor == null) return;
+      const here = aaAt(ev);
+      setSel(Math.min(anchor, here), Math.max(anchor, here));
+    });
+    svgEl.addEventListener('pointerup', () => { anchor = null; });
+    $$('.map-dom', svgEl).forEach((g) => {
+      const pick = () => setSel(Number(g.dataset.from), Number(g.dataset.to));
+      g.addEventListener('click', pick);
+      g.addEventListener('keydown', (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); pick(); } });
+    });
+  };
+
+  const selection = () => {
+    const stop = sel.stop && sel.to === L && m.hasStop;
+    const lo = Math.max(0, ntOf(sel.from) - sel.flank);
+    const hi = Math.min(dna.length, ntOf(sel.to) + 3 + (stop ? 3 : 0) + sel.flank);
+    return { nt: dna.slice(lo, hi), lo, hi, aa: protein.slice(sel.from - 1, sel.to), stop };
+  };
+
+  const drawOut = () => {
+    const { nt, lo, hi, aa } = selection();
+    const range = `${sel.from}–${sel.to}`;
+    const ntRange = m.whole ? `${fmtN(recPos(lo))}–${fmtN(hi)} of ${esc(cb.acc)}` : `${fmtN(lo - cdsStart + 1)}–${fmtN(hi - cdsStart)} of the coding sequence`;
+    // Codons beneath their residues, in rows of 20.
+    let grid = '';
+    if (aa.length <= 900) {
+      const first = ntOf(sel.from);
+      for (let i = 0; i < aa.length; i += 20) {
+        const chunk = aa.slice(i, i + 20);
+        const codons = [...chunk].map((_, k) => dna.slice(first + (i + k) * 3, first + (i + k) * 3 + 3));
+        grid += `<div class="cg-row"><span class="cg-n">${sel.from + i}</span><span class="cg-seq">`
+          + `<span class="cg-aa">${[...chunk].map((c) => ` ${c} `).join('')}</span>\n`
+          + `<span class="cg-nt">${codons.join('')}</span></span></div>`;
+      }
+    } else {
+      grid = '<p class="muted">The codon view is shown for up to 900 residues; the downloads still cover the whole selection.</p>';
+    }
+    $('#map-out', body).innerHTML = `
+      <div class="map-summary">
+        <b>aa ${range}</b> (${fmtN(aa.length)} aa) ↔ <b>nt ${ntRange}</b> (${fmtN(nt.length)} nt${sel.flank ? `, including ${fmtN(sel.flank)} nt flank` : ''})
+      </div>
+      <div class="panel-actions">
+        <button class="btn small" data-act="copy-nt">Copy nucleotides</button>
+        <button class="btn small" data-act="save-nt">Download nucleotide FASTA</button>
+        <button class="btn small" data-act="copy-aa">Copy protein</button>
+        <button class="btn small" data-act="save-aa">Download protein FASTA</button>
+        <button class="btn small" data-act="save-both">Download both</button>
+        <button class="btn small" data-act="save-cds">Whole coding sequence</button>
+        ${m.whole ? '<button class="btn small" data-act="save-rec">Whole mRNA record</button>' : ''}
+      </div>
+      <div class="codon-grid">${grid}</div>`;
+    const ntHeader = `${cb.acc}:${m.whole ? `${recPos(lo)}-${hi}` : `${lo - cdsStart + 1}-${hi - cdsStart}`} (coding sequence for ${id} aa ${range}${cb.strand === '-' ? ', minus strand' : ''})`;
+    const aaHeader = `${id}:${range} aa`;
+    const ntFa = toFasta([{ header: ntHeader, seq: nt }]);
+    const aaFa = toFasta([{ header: aaHeader, seq: aa }]);
+    const act = (name, fn) => $(`[data-act="${name}"]`, body)?.addEventListener('click', fn);
+    const tag = `${safeId}_${sel.from}-${sel.to}`;
+    act('copy-nt', () => copyText(nt));
+    act('copy-aa', () => copyText(aa));
+    act('save-nt', () => saveFile(`${tag}_nt.fasta`, ntFa));
+    act('save-aa', () => saveFile(`${tag}_aa.fasta`, aaFa));
+    act('save-both', () => saveFile(`${tag}_nt_aa.fasta`, ntFa + aaFa));
+    act('save-cds', () => saveFile(`${safeId}_cds.fasta`, toFasta([{ header: `${cb.acc} coding sequence for ${id}`, seq: dna.slice(cdsStart, cdsStart + L * 3 + (m.hasStop ? 3 : 0)) }])));
+    act('save-rec', () => saveFile(`${cb.acc}.fasta`, toFasta([{ header: cb.acc, seq: dna }])));
+  };
+
+  // One domain (or any aa range) as nucleotide and protein FASTA records. The flank
+  // setting applies, so a domain can be cut with a few bases of context.
+  const rangeRecords = (from, to, name) => {
+    const lo = Math.max(0, ntOf(from) - sel.flank);
+    const hi = Math.min(dna.length, ntOf(to) + 3 + sel.flank);
+    const pos = m.whole ? `${lo + 1}-${hi}` : `${lo - cdsStart + 1}-${hi - cdsStart}`;
+    return {
+      nt: { header: `${cb.acc}:${pos} ${name} (${id} aa ${from}-${to}${sel.flank ? `, +${sel.flank} nt flank` : ''})`, seq: dna.slice(lo, hi) },
+      aa: { header: `${id}:${from}-${to} ${name}`, seq: protein.slice(from - 1, to) },
+    };
+  };
+  const slug = (t) => t.replace(/[^\w.-]+/g, '_').slice(0, 40);
+
+  const drawDomains = () => {
+    $('#map-domains', body).innerHTML = placed.length ? `
+      <table class="kv"><tbody>${placed.map((d) => `<tr>
+        <td><span class="swatch" style="background:hsl(${d.hue} 60% 72%);border-color:hsl(${d.hue} 50% 40%)"></span>
+          <a href="#/record/cdd/${esc(d.cdd)}">${esc(d.name)}</a>${d.note && d.note !== d.name ? `<div class="muted small">${esc(d.note)}</div>` : ''}</td>
+        <td class="num">aa ${d.from}–${d.to}</td>
+        <td class="num muted">${fmtN((d.to - d.from + 1) * 3)} nt</td>
+        <td class="dom-actions">
+          <button class="btn small" data-from="${d.from}" data-to="${d.to}">Select</button>
+          <button class="btn small" data-dl="nt" data-i="${placed.indexOf(d)}">nt FASTA</button>
+          <button class="btn small" data-dl="aa" data-i="${placed.indexOf(d)}">aa FASTA</button>
+        </td></tr>`).join('')}</tbody></table>
+      <div class="panel-actions">
+        <button class="btn small" data-all="nt">All domains: nucleotide FASTA</button>
+        <button class="btn small" data-all="aa">All domains: protein FASTA</button>
+        <button class="btn small" data-all="both">All domains: both</button>
+      </div>`
+      : '<p class="muted">NCBI lists no conserved domains for this protein.</p>';
+    $$('#map-domains [data-dl]', body).forEach((b) => b.addEventListener('click', () => {
+      const d = placed[Number(b.dataset.i)];
+      const r = rangeRecords(d.from, d.to, d.name)[b.dataset.dl];
+      saveFile(`${safeId}_${slug(d.name)}_${d.from}-${d.to}_${b.dataset.dl}.fasta`, toFasta([r]));
+    }));
+    $$('#map-domains [data-all]', body).forEach((b) => b.addEventListener('click', () => {
+      const recs = placed.map((d) => rangeRecords(d.from, d.to, d.name));
+      const kind = b.dataset.all;
+      const list = kind === 'both' ? recs.flatMap((r) => [r.nt, r.aa]) : recs.map((r) => r[kind]);
+      saveFile(`${safeId}_domains_${kind}.fasta`, toFasta(list));
+    }));
+    $$('#map-domains [data-from]', body).forEach((b) =>
+      b.addEventListener('click', () => { setSel(Number(b.dataset.from), Number(b.dataset.to)); window.scrollTo({ top: body.offsetTop - 60, behavior: 'smooth' }); }));
+  };
+
+  $$('[data-whole]', body).forEach((b) => b.addEventListener('click', () => {
+    const end = cdsStart + L * 3 + (m.hasStop ? 3 : 0);
+    const files = {
+      rec: [`${cb.acc}.fasta`, { header: `${cb.acc} (mRNA, CDS at ${cb.parts[0].from}..${cb.parts[0].to})`, seq: dna }],
+      cds: [`${safeId}_cds.fasta`, { header: `${cb.acc} coding sequence for ${id}`, seq: dna.slice(cdsStart, end) }],
+      aa: [`${safeId}.fasta`, { header: `${id} ${L} aa`, seq: protein }],
+    };
+    const [name, rec] = files[b.dataset.whole];
+    saveFile(name, toFasta([rec]));
+  }));
+
+  const form = $('#map-form', body);
+  function setSel(from, to) {
+    sel.from = clampAa(from);
+    sel.to = Math.max(sel.from, clampAa(to));
+    form.elements.from.value = sel.from;
+    form.elements.to.value = sel.to;
+    drawMap();
+    drawOut();
+  }
+  form.addEventListener('submit', (e) => e.preventDefault());
+  form.addEventListener('input', () => {
+    sel.from = clampAa(form.elements.from.value);
+    sel.to = Math.max(sel.from, clampAa(form.elements.to.value));
+    sel.flank = Math.max(0, Math.min(5000, Number(form.elements.flank?.value) || 0));
+    sel.stop = form.elements.stop.checked;
+    drawMap();
+    drawOut();
+  });
+  $('[data-act="all"]', form).addEventListener('click', () => setSel(1, L));
+
+  drawMap();
+  drawOut();
+  drawDomains();
+}
+
 function summaryTabHtml(db, doc) {
   let extra = '';
   if (db === 'gene') {
@@ -2127,7 +2448,7 @@ function renderFeatures(body, db, id, features, isStale = () => false, uid = '')
           : esc(f.location)}</td>
         <td>${name.map((n, i) => (i === 0 ? `<b>${esc(n)}</b>` : `<span class="muted">${esc(n)}</span>`)).join('<br>')}</td>
         <td>${esc(qv(f, 'product') || qv(f, 'note') || qv(f, 'organism'))}
-          ${protein ? `<br><a href="#/record/protein/${encodeURIComponent(cleanSeqId(protein))}">${esc(cleanSeqId(protein))}</a>` : ''}
+          ${protein ? `<br><a href="#/record/protein/${encodeURIComponent(cleanSeqId(protein))}">${esc(cleanSeqId(protein))}</a> · <a href="#/record/protein/${encodeURIComponent(cleanSeqId(protein))}?tab=map">map</a>` : ''}
           ${geneId ? ` <a href="#/record/gene/${geneId}">Gene ${esc(geneId)}</a>` : ''}</td>
         <td class="actions"><button class="btn small" data-feature="${idx}">Sequence</button></td>
       </tr>`;

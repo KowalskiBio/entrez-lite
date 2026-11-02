@@ -422,3 +422,31 @@ textarea { resize: vertical; font-family: var(--mono); font-size: 0.85rem; }
 .history-query code { word-break: break-word; }
 .history-table .segmented button { padding: 4px 9px; font-size: 0.8rem; }
 @media (max-width: 640px) { .builder select { width: 100%; } }
+
+/* Protein <-> nucleotide map */
+.map-wrap { margin: 8px 0 12px; overflow-x: auto; }
+.map-svg { width: 100%; min-width: 640px; height: auto; user-select: none; touch-action: pan-y; cursor: crosshair; }
+.map-label { fill: var(--muted); font-size: 12px; }
+.map-tl { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
+.map-tick { stroke: var(--muted); stroke-width: 1; }
+.map-utr { fill: var(--border); }
+.map-cds { fill: var(--accent); opacity: 0.85; }
+.map-prot { fill: var(--surface); stroke: var(--accent); stroke-width: 1.5; }
+.map-sel { fill: none; stroke: #e0662b; stroke-width: 2; }
+.map-link { fill: #e0662b; opacity: 0.16; }
+.map-dom { cursor: pointer; }
+.map-dom:hover rect, .map-dom:focus rect { stroke-width: 2.5; }
+.map-dl { font-size: 11px; fill: #1b2430; pointer-events: none; }
+.map-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 6px 0 12px; }
+.map-controls label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--muted); gap: 2px; }
+.map-controls label.check { flex-direction: row; align-items: center; gap: 6px; }
+.map-controls input[type="number"] { width: 100px; }
+.map-summary { margin: 4px 0 8px; }
+.codon-grid { font-family: var(--mono); font-size: 0.8rem; overflow-x: auto; margin-top: 8px; }
+.cg-row { display: flex; gap: 10px; margin-bottom: 8px; white-space: pre; }
+.cg-n { color: var(--muted); min-width: 4ch; text-align: right; }
+.cg-seq { display: inline-block; line-height: 1.35; }
+.cg-aa { font-weight: 600; color: var(--accent); }
+.swatch { display: inline-block; width: 12px; height: 12px; border: 1px solid; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.dom-actions { white-space: nowrap; }
+.dom-actions .btn { margin-right: 4px; }

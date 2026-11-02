@@ -559,3 +559,66 @@ function toFasta(records, width = 70) {
 function cleanSeqId(value) {
   return String(value).split('|').filter(Boolean).pop() || value;
 }
+
+// --- Protein <-> coding sequence ---------------------------------------------
+
+// The GenPept CDS feature says where a protein is encoded: /coded_by="NM_000546.6:143..1324",
+// "complement(NC_000017.11:7668402..7668421)" or "join(...)" across exons. Returns the
+// nucleotide accession and the pieces in transcript order (each as ascending
+// coordinates), or null for a location this cannot place (several accessions, no span).
+function parseCodedBy(value) {
+  let text = String(value || '').replace(/\s+/g, '');
+  let minus = false;
+  const complement = /^complement\((.*)\)$/;
+  if (complement.test(text)) { minus = true; text = text.replace(complement, '$1'); }
+  const join = /^join\((.*)\)$/;
+  if (join.test(text)) text = text.replace(join, '$1');
+  const parts = [];
+  let acc = '';
+  for (let piece of text.split(',')) {
+    if (complement.test(piece)) { minus = true; piece = piece.replace(complement, '$1'); }
+    const m = piece.match(/^([A-Za-z0-9_.]+):[<>]?(\d+)\.\.[<>]?(\d+)$/);
+    if (!m || (acc && acc !== m[1])) return null;
+    acc = m[1];
+    parts.push({ from: Number(m[2]), to: Number(m[3]) });
+  }
+  if (!parts.length) return null;
+  return { acc, strand: minus ? '-' : '+', parts: minus ? parts.reverse() : parts };
+}
+
+const CODONS = (() => {
+  const aa = 'FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG';
+  const table = {};
+  let i = 0;
+  for (const a of 'TCAG') for (const b of 'TCAG') for (const c of 'TCAG') table[a + b + c] = aa[i++];
+  return table;
+})();
+
+// Standard genetic code (also the bacterial table 11 outside of start codons).
+function translateDna(dna) {
+  let out = '';
+  const seq = dna.toUpperCase().replace(/U/g, 'T');
+  for (let i = 0; i + 2 < seq.length; i += 3) out += CODONS[seq.slice(i, i + 3)] || 'X';
+  return out;
+}
+
+function reverseComplement(dna) {
+  const pair = { A: 'T', T: 'A', G: 'C', C: 'G', U: 'A', N: 'N' };
+  let out = '';
+  for (let i = dna.length - 1; i >= 0; i--) out += pair[dna[i].toUpperCase()] || 'N';
+  return out;
+}
+
+// Protein domains from a protein feature table: regions that carry a CDD cross-reference.
+function proteinDomains(features) {
+  return features
+    .filter((f) => f.type === 'Region' && (f.q.db_xref || []).some((x) => /^CDD:\d+/.test(x)))
+    .map((f) => ({
+      name: f.q.region_name?.[0] || f.q.note?.[0] || 'Domain',
+      cdd: f.q.db_xref.find((x) => /^CDD:/.test(x)).slice(4),
+      note: f.q.note?.[0] || '',
+      from: f.lo,
+      to: f.hi,
+    }))
+    .sort((a, b) => a.from - b.from || b.to - a.to);
+}
