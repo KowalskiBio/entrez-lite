@@ -1957,6 +1957,21 @@ async function renderTab(db, id, doc, tab, region, hasRegion, shownLen, token) {
       const text = await cachedFetch(`${db}|${id}|fasta|${regionKey}`, () => efetch(db, id, 'fasta', regionParams));
       if (isStale()) return;
       const [rec] = parseFasta(text);
+      const own = { load: async () => ({ text, filename: `${safeId}${suffix}.fasta`, stats: rec ? seqStats(rec.seq, db === 'protein') : '' }) };
+      let views = null;
+      if (db === 'protein') {
+        views = [{ label: 'Protein', ...own }, ...proteinNucleotideViews(id, safeId)];
+      } else if (db === 'nuccore' && !doc.properties?.master) {
+        const cdsRegion = hasRegion ? { seq_start: Math.min(region.from, region.to), seq_stop: Math.max(region.from, region.to) } : {};
+        views = [{ label: 'Nucleotide', ...own }, { label: 'Encoded proteins', load: async () => {
+          const aa = await cachedFetch(`nuccore|${id}|cds_aa|${regionKey}`, () => efetch('nuccore', id, 'fasta_cds_aa', cdsRegion));
+          const recs = parseFasta(aa);
+          if (!recs.length) return { notice: 'No protein-coding sequences are annotated in this record.' };
+          const shown = recs.length > 300 ? toFasta(recs.slice(0, 300)) + `\n… ${recs.length - 300} more (the Download button saves all of them)\n` : toFasta(recs);
+          return { text: shown, full: toFasta(recs), filename: `${safeId}${suffix}_proteins.fasta`, stats: `${fmtN(recs.length)} proteins, one per annotated CDS` };
+        } }];
+      }
+      if (views) { viewSwitcher(body, views); return; }
       body.innerHTML = `<p class="muted stats">${rec ? seqStats(rec.seq, db === 'protein') : ''}</p>` + textPanelHtml(text, `${safeId}${suffix}.fasta`);
       bindTextPanel(body, text);
       return;
@@ -2056,6 +2071,64 @@ function proteinFactsHtml(db, doc) {
   }
   const body = rows.filter(([, v]) => v).map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('');
   return `${intro}<h3>Details</h3><table class="kv">${body}</table>`;
+}
+
+// One record in several forms (protein, coding sequence, mRNA…) behind a switch.
+// Each view's `load` runs on first use and returns { text, filename, stats } to show
+// as FASTA, or { notice } to explain why that form is not available.
+function viewSwitcher(box, views) {
+  box.innerHTML = `
+    <div class="segmented view-switch" role="group">
+      ${views.map((v, i) => `<button data-i="${i}" aria-pressed="${i === 0}">${esc(v.label)}</button>`).join('')}
+    </div>
+    <div class="view-out"></div>`;
+  const out = $('.view-out', box);
+  const cache = [];
+  let latest = 0;
+  const show = async (i) => {
+    const mine = ++latest;
+    $$('.view-switch button', box).forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.i) === i)));
+    out.innerHTML = loadingHtml('Fetching from NCBI');
+    try {
+      cache[i] ||= views[i].load();
+      const r = await cache[i];
+      if (mine !== latest || !box.isConnected) return;
+      if (r.notice) { out.innerHTML = `<div class="notice">${esc(r.notice)}</div>`; return; }
+      out.innerHTML = (r.stats ? `<p class="muted stats">${esc(r.stats)}</p>` : '') + textPanelHtml(r.text, r.filename);
+      bindTextPanel(out, r.full || r.text);
+    } catch (e) {
+      cache[i] = null;
+      if (mine === latest && box.isConnected) out.innerHTML = errorHtml(e);
+    }
+  };
+  $$('.view-switch button', box).forEach((b) => b.addEventListener('click', () => show(Number(b.dataset.i))));
+  show(0);
+}
+
+// The nucleotide forms of a protein: its coding sequence, and the whole mRNA when the
+// source record is small enough to have been loaded whole.
+function proteinNucleotideViews(id, safeId) {
+  const cds = async () => {
+    const m = await loadProteinMap(id);
+    if (m.error) return { notice: m.error };
+    const seq = m.dna.slice(m.cdsStart, m.cdsStart + m.protein.length * 3 + (m.hasStop ? 3 : 0));
+    return {
+      text: toFasta([{ header: `${m.cb.acc} coding sequence for ${id}`, seq }]),
+      filename: `${safeId}_cds.fasta`,
+      stats: `${fmtN(seq.length)} nt · ${m.protein.length} aa + ${m.hasStop ? 'stop codon' : 'no stop codon in the record'}`,
+    };
+  };
+  const mrna = async () => {
+    const m = await loadProteinMap(id);
+    if (m.error) return { notice: m.error };
+    if (!m.whole) return { notice: `${m.cb.acc} is a large record (a genome or chromosome), so there is no separate mRNA to show. Use Coding sequence, or the Map tab to take a stretch of flanking sequence too.` };
+    return {
+      text: toFasta([{ header: `${m.cb.acc} (CDS ${m.cb.parts[0].from}..${m.cb.parts[0].to})`, seq: m.dna }]),
+      filename: `${m.cb.acc}.fasta`,
+      stats: `${fmtN(m.dna.length)} nt · coding sequence at ${fmtN(m.cb.parts[0].from)}..${fmtN(m.cb.parts[0].to)}`,
+    };
+  };
+  return [{ label: 'Coding sequence (CDS)', load: cds }, { label: 'mRNA with UTRs', load: mrna }];
 }
 
 // --- Protein <-> nucleotide map ------------------------------------------------
@@ -2635,7 +2708,7 @@ function renderFeatures(body, db, id, features, isStale = () => false, uid = '')
         <td class="actions"><button class="btn small" data-feature="${idx}">Sequence</button></td>
       </tr>`;
     }).join('') || '<tr><td colspan="5" class="muted">No features match.</td></tr>';
-    $$('[data-feature]', tbody).forEach((b) => b.addEventListener('click', () => showFeatureSequence(db, id, features[Number(b.dataset.feature)])));
+    $$('[data-feature]', tbody).forEach((b) => b.addEventListener('click', () => showFeatureSequence(db, id, features[Number(b.dataset.feature)], features)));
     if (domainWant) return;
     if (needle && !rows.length && canSearchDomains) domains.offer(needle);
     else domains.clear();
@@ -2665,27 +2738,53 @@ function renderFeatures(body, db, id, features, isStale = () => false, uid = '')
   draw();
 }
 
-async function showFeatureSequence(db, id, f) {
+async function showFeatureSequence(db, id, f, features = []) {
   const qv = (k) => f.q[k]?.[0] || '';
   const name = qv('gene') || qv('locus_tag') || f.type;
-  openModal(`${name} · ${f.type}`, loadingHtml('Fetching sequence'));
-  try {
-    // The feature table lists intervals in transcript order, so fetching each one on the
-    // feature's strand and joining them gives the right spliced sequence.
-    let seq = '';
-    for (const p of f.parts.slice(0, 50)) {
-      const strand = db === 'nuccore' ? (f.strand === '-' ? 2 : 1) : undefined;
-      const text = await efetch(db, id, 'fasta', { seq_start: p.from, seq_stop: p.to, strand });
-      seq += parseFasta(text)[0]?.seq || '';
+  const title = `${name}${qv('product') ? ' ' + qv('product') : ''}`;
+  const safe = name.replace(/[^\w.-]/g, '_');
+  openModal(`${name} · ${f.type}`, '<div id="feature-views"></div>');
+
+  const views = [];
+  if (db === 'protein') {
+    // A protein feature is a stretch of residues; the nucleotides behind it come from the coding sequence.
+    views.push({ label: 'Protein', load: async () => {
+      let seq = '';
+      for (const p of f.parts.slice(0, 50)) seq += parseFasta(await efetch(db, id, 'fasta', { seq_start: p.from, seq_stop: p.to }))[0]?.seq || '';
+      return { text: toFasta([{ header: `${id}:${f.location} ${title}`, seq }]), filename: `${safe}_aa.fasta`, stats: `${seqStats(seq, true)} · ${f.location}` };
+    } });
+    views.push({ label: 'Nucleotide', load: async () => {
+      const m = await loadProteinMap(id);
+      if (m.error) return { notice: m.error };
+      const seq = f.parts.map((p) => m.dna.slice(m.cdsStart + (p.from - 1) * 3, m.cdsStart + p.to * 3)).join('');
+      return { text: toFasta([{ header: `${m.cb.acc} coding sequence for ${id}:${f.location} ${title}`, seq }]), filename: `${safe}_nt.fasta`, stats: `${fmtN(seq.length)} nt · ${f.location}` };
+    } });
+  } else {
+    views.push({ label: 'Nucleotide', load: async () => {
+      // The feature table lists intervals in transcript order, so fetching each one on the
+      // feature's strand and joining them gives the right spliced sequence.
+      let seq = '';
+      for (const p of f.parts.slice(0, 50)) {
+        const strand = db === 'nuccore' ? (f.strand === '-' ? 2 : 1) : undefined;
+        seq += parseFasta(await efetch(db, id, 'fasta', { seq_start: p.from, seq_stop: p.to, strand }))[0]?.seq || '';
+      }
+      return { text: toFasta([{ header: `${id}:${f.location} ${title}`, seq }]), filename: `${safe}.fasta`, stats: `${seqStats(seq, false)} · ${f.location}` };
+    } });
+    if (db === 'nuccore') {
+      // The CDS itself, or for a gene / mRNA the CDS entries of the same locus inside it.
+      const key = (g) => g.q.locus_tag?.[0] || g.q.gene?.[0] || '';
+      const cds = f.type === 'CDS' ? [f]
+        : key(f) ? features.filter((c) => c.type === 'CDS' && c.q.protein_id && key(c) === key(f) && c.lo >= f.lo && c.hi <= f.hi && c.strand === f.strand) : [];
+      const ids = [...new Set(cds.map((c) => cleanSeqId(c.q.protein_id?.[0] || '')).filter(Boolean))].slice(0, 20);
+      if (ids.length) {
+        views.push({ label: ids.length > 1 ? `Proteins (${ids.length})` : 'Protein', load: async () => {
+          const text = await efetch('protein', ids, 'fasta');
+          return { text, filename: `${safe}_aa.fasta`, stats: ids.map((p) => `${p}`).join(', ') };
+        } });
+      }
     }
-    const header = `${id}:${f.location} ${name}${qv('product') ? ' ' + qv('product') : ''}`;
-    const fasta = toFasta([{ header, seq }]);
-    const body = $('#modal-body');
-    body.innerHTML = `<p class="muted stats">${seqStats(seq, db === 'protein')} · ${esc(f.location)}</p>` + textPanelHtml(fasta, `${name.replace(/[^\w.-]/g, '_')}.fasta`);
-    bindTextPanel(body, fasta);
-  } catch (e) {
-    $('#modal-body').innerHTML = errorHtml(e);
   }
+  viewSwitcher($('#feature-views'), views);
 }
 
 // "lcl|NZ_CP027720.1_cds_WP_041989327.1_2 [locus_tag=...] [protein_id=WP_041989327.1] ..."
