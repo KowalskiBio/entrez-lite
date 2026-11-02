@@ -270,7 +270,9 @@ td .badge { margin-left: 0; }
 .tabs button:hover { color: var(--text); }
 .tabs button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
 
-.panel-actions { display: flex; gap: 8px; justify-content: flex-end; margin-bottom: 8px; }
+.panel-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-bottom: 8px; }
+#map-out .panel-actions, #map-domains .panel-actions, .whole-actions { justify-content: flex-start; align-items: center; }
+.map-summary { overflow-wrap: anywhere; }
 .stats { margin: 0 0 6px; font-size: 0.85rem; }
 pre.seq {
   margin: 0; padding: 16px; overflow: auto; max-height: 70vh;
@@ -459,3 +461,8 @@ textarea { resize: vertical; font-family: var(--mono); font-size: 0.85rem; }
 .map-base.in-cds { fill: #fff; font-weight: 600; }
 .map-aa { font-family: var(--mono); font-size: 11px; font-weight: 700; fill: var(--accent); pointer-events: none; }
 .map-zoombox { fill: #e0662b; opacity: 0.12; stroke: #e0662b; stroke-dasharray: 4 3; pointer-events: none; }
+
+/* Sidebar "Sequence" card on the Map tab */
+#seq-card .map-summary { margin: 0 0 10px; font-size: 0.85rem; }
+.seq-actions { display: flex; flex-direction: column; gap: 6px; }
+.seq-actions .btn { width: 100%; justify-content: center; }

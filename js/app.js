@@ -1905,6 +1905,7 @@ function seqStats(seq, isProtein) {
 async function renderTab(db, id, doc, tab, region, hasRegion, shownLen, token) {
   const body = $('#tab-body');
   const isStale = () => token !== routeToken || !body.isConnected;
+  if (tab !== 'map') $('#seq-card')?.remove();
   const regionParams = hasRegion ? { seq_start: region.from, seq_stop: region.to, strand: region.strand } : {};
   const regionKey = hasRegion ? `${region.from}-${region.to}-${region.strand}` : 'all';
   const safeId = id.replace(/[^\w.-]/g, '_');
@@ -2264,6 +2265,13 @@ async function renderMap(body, id, safeId, isStale) {
     <h3>Domains</h3>
     <div id="map-domains"></div>`;
 
+  // The selection and its downloads live in the sidebar, so they stay in view while the
+  // map is zoomed and the domain table scrolled.
+  $('#seq-card')?.remove();
+  const seqCard = Object.assign(document.createElement('div'), { className: 'card', id: 'seq-card' });
+  seqCard.innerHTML = '<h3>Sequence</h3><div id="seq-card-body"></div>';
+  $('.record-side')?.prepend(seqCard);
+
   const W = 900;
   const MIN_VIEW = 12; // nt; close enough to read every base
   const ntOf = (aa) => cdsStart + (aa - 1) * 3; // dna index where residue aa starts
@@ -2526,11 +2534,12 @@ async function renderMap(body, id, safeId, isStale) {
     } else {
       grid = '<p class="muted">The codon view is shown for up to 900 residues; the downloads still cover the whole selection.</p>';
     }
-    $('#map-out', body).innerHTML = `
+    $('#map-out', body).innerHTML = `<div class="codon-grid">${grid}</div>`;
+    $('#seq-card-body').innerHTML = `
       <div class="map-summary">
         <b>aa ${range}</b> (${fmtN(aa.length)} aa) ↔ <b>nt ${ntRange}</b> (${fmtN(nt.length)} nt${sel.flank ? `; selection ${sel.from}–${sel.to} extended by ${flankText()} each end` : ''})
       </div>
-      <div class="panel-actions">
+      <div class="seq-actions">
         <button class="btn small" data-act="copy-nt">Copy nucleotides</button>
         <button class="btn small" data-act="save-nt">Download nucleotide FASTA</button>
         <button class="btn small" data-act="copy-aa">Copy protein</button>
@@ -2538,13 +2547,12 @@ async function renderMap(body, id, safeId, isStale) {
         <button class="btn small" data-act="save-both">Download both</button>
         <button class="btn small" data-act="save-cds">Whole coding sequence</button>
         ${m.whole ? '<button class="btn small" data-act="save-rec">Whole mRNA record</button>' : ''}
-      </div>
-      <div class="codon-grid">${grid}</div>`;
+      </div>`;
     const ntHeader = `${cb.acc}:${coords(lo, hi)} (coding sequence for ${id} aa ${range}${strandNote})`;
     const aaHeader = `${id}:${range} aa`;
     const ntFa = toFasta([{ header: ntHeader, seq: nt }]);
     const aaFa = toFasta([{ header: aaHeader, seq: aa }]);
-    const act = (name, fn) => $(`[data-act="${name}"]`, body)?.addEventListener('click', fn);
+    const act = (name, fn) => $(`#seq-card [data-act="${name}"]`)?.addEventListener('click', fn);
     const tag = `${safeId}_${aFrom}-${aTo}`;
     act('copy-nt', () => copyText(nt));
     act('copy-aa', () => copyText(aa));
