@@ -609,16 +609,32 @@ function reverseComplement(dna) {
   return out;
 }
 
-// Protein domains from a protein feature table: regions that carry a CDD cross-reference.
-function proteinDomains(features) {
-  return features
-    .filter((f) => f.type === 'Region' && (f.q.db_xref || []).some((x) => /^CDD:\d+/.test(x)))
-    .map((f) => ({
-      name: f.q.region_name?.[0] || f.q.note?.[0] || 'Domain',
-      cdd: f.q.db_xref.find((x) => /^CDD:/.test(x)).slice(4),
-      note: f.q.note?.[0] || '',
-      from: f.lo,
-      to: f.hi,
-    }))
-    .sort((a, b) => a.from - b.from || b.to - a.to);
+// The Region features of a GenPept record: the domains NCBI assigned (those with a CDD
+// cross-reference, named by their short model name such as NR_LBD_ER) and the
+// functional regions propagated from UniProt (Hinge, Transactivation AF-2…). The
+// feature table (rettype=ft) leaves the short names out, so this reads the GenPept text.
+function proteinRegions(gp) {
+  const body = gp.split(/^FEATURES.*$/m)[1]?.split(/^ORIGIN/m)[0] || '';
+  const regions = [];
+  let cur = null;
+  const finish = () => {
+    if (!cur || cur.key !== 'Region') return;
+    const m = cur.loc.match(/^<?(\d+)\.\.>?(\d+)$/);
+    if (!m) return;
+    const text = cur.lines.join(' ').replace(/\s+/g, ' ');
+    const q = (name) => {
+      const hit = text.match(new RegExp(`/${name}="([^"]*)"`));
+      return hit ? hit[1].replace(/\s*\/evidence=.*$/, '').replace(/\.\s*$/, '').trim() : '';
+    };
+    const cdd = text.match(/\/db_xref="CDD:(\d+)"/)?.[1] || '';
+    const name = q('region_name') || q('note');
+    if (!name) return;
+    regions.push({ name, note: q('note'), cdd, from: Number(m[1]), to: Number(m[2]) });
+  };
+  for (const line of body.split('\n')) {
+    const head = line.match(/^ {5}(\S+)\s+(\S+)\s*$/);
+    if (head) { finish(); cur = { key: head[1], loc: head[2], lines: [] }; } else if (cur) cur.lines.push(line.trim());
+  }
+  finish();
+  return regions.sort((a, b) => a.from - b.from || b.to - a.to);
 }

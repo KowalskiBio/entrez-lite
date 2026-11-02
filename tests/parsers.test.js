@@ -69,7 +69,7 @@ test('cleanSeqId strips database prefixes', () => {
   assert.equal(cleanSeqId('XP_1.1'), 'XP_1.1');
 });
 
-const { parseCodedBy, translateDna, reverseComplement, proteinDomains } = loadEutils();
+const { parseCodedBy, translateDna, reverseComplement, proteinRegions } = loadEutils();
 
 test('coded_by places a protein on its mRNA, on the minus strand, or across exons', () => {
   assert.deepEqual(parseCodedBy('NM_000546.6:143..1324'),
@@ -88,8 +88,27 @@ test('a coding sequence translates to its protein, and a reverse complement roun
   assert.equal(reverseComplement('ATGC'), 'GCAT');
 });
 
-test('only regions with a conserved-domain cross-reference count as domains', () => {
-  const ft = '>Feature ref|X|\n1\t393\tProtein\n6\t30\tRegion\n\t\t\tnote\tP53 transactivation motif\n\t\t\tdb_xref\tCDD:462520\n1\t44\tRegion\n\t\t\tnote\tTransactivation\n';
-  assert.deepEqual(proteinDomains(parseFeatureTable(ft)),
-    [{ name: 'P53 transactivation motif', cdd: '462520', note: 'P53 transactivation motif', from: 6, to: 30 }]);
+test('GenPept regions split into CDD domains and propagated functional regions', () => {
+  const gp = `FEATURES             Location/Qualifiers
+     Protein         1..595
+                     /product="estrogen receptor"
+     Region          251..310
+                     /region_name="Hinge"
+                     /note="propagated from UniProtKB/Swiss-Prot (P03372.2)"
+     Region          310..547
+                     /region_name="NR_LBD_ER"
+                     /note="Ligand binding domain of Estrogen receptor"
+                     /db_xref="CDD:132747"
+     Region          1..184
+                     /region_name="Modulating (transactivation AF-1), mediates
+                     interaction with MACROD1. /evidence=ECO:0000269|PubMed:1"
+     Site            order(5,9)
+ORIGIN
+        1 mkk`;
+  const r = proteinRegions(gp);
+  assert.deepEqual(r.map((x) => [x.name, x.from, x.to, x.cdd]), [
+    ['Modulating (transactivation AF-1), mediates interaction with MACROD1', 1, 184, ''],
+    ['Hinge', 251, 310, ''],
+    ['NR_LBD_ER', 310, 547, '132747'],
+  ]);
 });

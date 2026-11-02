@@ -2149,12 +2149,11 @@ async function loadProteinMap(id, doc) {
   if (!cb) return { error: `The coding location “${codedBy.replace(/\s+/g, '')}” cannot be placed on one sequence.` };
   const frame = Number(gp.match(/\/codon_start=(\d)/)?.[1] || 1) - 1;
 
-  const [ft, fa] = await Promise.all([
-    cachedFetch(`protein|${id}|ft|all`, () => efetch('protein', id, 'ft')),
-    cachedFetch(`protein|${id}|fasta|all`, () => efetch('protein', id, 'fasta')),
-  ]);
+  const fa = await cachedFetch(`protein|${id}|fasta|all`, () => efetch('protein', id, 'fasta'));
   const protein = parseFasta(fa)[0]?.seq || '';
-  const domains = proteinDomains(parseFeatureTable(ft));
+  const regions = proteinRegions(gp);
+  const domains = regions.filter((r) => r.cdd);
+  const others = regions.filter((r) => !r.cdd);
 
   let whole = false;
   if (cb.parts.length === 1 && cb.strand === '+') {
@@ -2197,7 +2196,7 @@ async function loadProteinMap(id, doc) {
   let mismatches = 0;
   for (let i = 1; i < protein.length; i++) if (translated[i] !== protein[i] && protein[i] !== 'X') mismatches++;
   return {
-    protein, domains, dna, cdsStart, cb, whole, table, mismatches, origin, dir, hasFlank,
+    protein, domains, others, dna, cdsStart, cb, whole, table, mismatches, origin, dir, hasFlank,
     hasStop: /^(TAA|TAG|TGA)$/i.test(dna.slice(cdsStart + protein.length * 3, cdsStart + protein.length * 3 + 3)),
     checked: dna.length >= cdsStart + protein.length * 3 && table !== 4 && !/^(2|3|5|9|13|14|16|21|22|23|24|25)$/.test(String(table)),
   };
@@ -2214,7 +2213,7 @@ async function renderMap(body, id, safeId, isStale) {
   if (isStale()) return;
   if (m.error) { body.innerHTML = `<div class="notice">${esc(m.error)}</div>`; return; }
 
-  const { protein, domains, dna, cdsStart, cb } = m;
+  const { protein, domains, others, dna, cdsStart, cb } = m;
   const L = protein.length;
   // Record coordinates of dna[lo, hi) as "a-b", lowest first, or coding-relative when the
   // CDS was joined from several pieces and the record has no single numbering.
@@ -2222,7 +2221,9 @@ async function renderMap(body, id, safeId, isStale) {
     ? `${lo - cdsStart + 1}-${hi - cdsStart}`
     : m.dir > 0 ? `${m.origin + lo}-${m.origin + hi - 1}` : `${m.origin - (hi - 1)}-${m.origin - lo}`);
   const strandNote = cb.strand === '-' ? ', reverse complement' : '';
-  const sel = { from: 1, to: L, flank: 0, stop: false };
+  const sel = { from: 1, to: L, flank: 0, unit: 'nt', stop: false };
+  // Extension in nucleotides, whichever unit was chosen; in aa the protein grows by whole residues too.
+  const flankAa = () => (sel.unit === 'aa' ? sel.flank : 0);
 
   body.innerHTML = `
     <p class="muted stats">${esc(id)} · ${fmtN(L)} aa, encoded by
@@ -2254,7 +2255,8 @@ async function renderMap(body, id, safeId, isStale) {
     <form class="map-controls" id="map-form">
       <label>From aa <input name="from" type="number" min="1" max="${L}" value="1"></label>
       <label>to aa <input name="to" type="number" min="1" max="${L}" value="${L}"></label>
-      ${m.hasFlank ? '<label>Extra flank (nt) <input name="flank" type="number" min="0" max="5000" value="0"></label>' : ''}
+      <label>Extend each end by <input name="flank" type="number" min="0" max="2000" value="0"></label>
+      <label>unit <select name="unit"><option value="nt">nt</option><option value="aa">aa</option></select></label>
       <label class="check"><input type="checkbox" name="stop"> include stop codon</label>
       <button class="btn small" type="button" data-act="all">Whole protein</button>
     </form>
@@ -2325,8 +2327,9 @@ async function renderMap(body, id, safeId, isStale) {
     const first = Math.max(0, Math.floor(view.s));
     const last = Math.min(dna.length, Math.ceil(view.e));
     const cdsEnd = cdsStart + L * 3 + (m.hasStop ? 3 : 0);
-    const a0 = x(ntOf(sel.from));
-    const a1 = x(ntOf(sel.to) + 3 + (sel.stop && sel.to === L ? 3 : 0));
+    const ext = selection();
+    const a0 = x(ext.lo);
+    const a1 = x(ext.hi);
     const dnaBar = m.hasFlank ? { s: 0, e: dna.length } : { s: 0, e: cdsEnd };
     let g = '<g clip-path="url(#map-clip)">';
 
@@ -2487,32 +2490,36 @@ async function renderMap(body, id, safeId, isStale) {
     else if (v === 'out') zoomAt(2.5, mid);
     else if (v === 'reset') setView(overview().s, overview().e);
     else if (v === 'sel') {
-      const lo = ntOf(sel.from) - sel.flank;
-      const hi = ntOf(sel.to) + 3 + sel.flank;
+      const { lo, hi } = selection();
       const pad = Math.max(6, (hi - lo) * 0.08);
       setView(lo - pad, hi + pad);
     }
   });
 
-  const selection = () => {
-    const stop = sel.stop && sel.to === L && m.hasStop;
-    const lo = Math.max(0, ntOf(sel.from) - sel.flank);
-    const hi = Math.min(dna.length, ntOf(sel.to) + 3 + (stop ? 3 : 0) + sel.flank);
-    return { nt: dna.slice(lo, hi), lo, hi, aa: protein.slice(sel.from - 1, sel.to), stop };
+  // A range with the chosen extension: whole residues (and their codons) when the unit
+  // is aa, extra bases either side when it is nt. Residues stop at the protein's ends.
+  const extend = (from, to, stop = false) => {
+    const aFrom = Math.max(1, from - flankAa());
+    const aTo = Math.min(L, to + flankAa());
+    const lo = Math.max(0, ntOf(aFrom) - (sel.unit === 'nt' ? sel.flank : 0));
+    const hi = Math.min(dna.length, ntOf(aTo) + 3 + (stop ? 3 : 0) + (sel.unit === 'nt' ? sel.flank : 0));
+    return { aFrom, aTo, lo, hi, nt: dna.slice(lo, hi), aa: protein.slice(aFrom - 1, aTo) };
   };
+  const selection = () => extend(sel.from, sel.to, sel.stop && sel.to === L && m.hasStop);
+  const flankText = () => (sel.flank ? `${fmtN(sel.flank)} ${sel.unit}` : '');
 
   const drawOut = () => {
-    const { nt, lo, hi, aa } = selection();
-    const range = `${sel.from}–${sel.to}`;
+    const { nt, lo, hi, aa, aFrom, aTo } = selection();
+    const range = `${aFrom}–${aTo}`;
     const ntRange = m.origin != null ? `${coords(lo, hi).replace('-', '–')} of ${esc(cb.acc)}` : `${fmtN(lo - cdsStart + 1)}–${fmtN(hi - cdsStart)} of the coding sequence`;
     // Codons beneath their residues, in rows of 20.
     let grid = '';
     if (aa.length <= 900) {
-      const first = ntOf(sel.from);
+      const first = ntOf(aFrom);
       for (let i = 0; i < aa.length; i += 20) {
         const chunk = aa.slice(i, i + 20);
         const codons = [...chunk].map((_, k) => dna.slice(first + (i + k) * 3, first + (i + k) * 3 + 3));
-        grid += `<div class="cg-row"><span class="cg-n">${sel.from + i}</span><span class="cg-seq">`
+        grid += `<div class="cg-row"><span class="cg-n">${aFrom + i}</span><span class="cg-seq">`
           + `<span class="cg-aa">${[...chunk].map((c) => ` ${c} `).join('')}</span>\n`
           + `<span class="cg-nt">${codons.join('')}</span></span></div>`;
       }
@@ -2521,7 +2528,7 @@ async function renderMap(body, id, safeId, isStale) {
     }
     $('#map-out', body).innerHTML = `
       <div class="map-summary">
-        <b>aa ${range}</b> (${fmtN(aa.length)} aa) ↔ <b>nt ${ntRange}</b> (${fmtN(nt.length)} nt${sel.flank ? `, including ${fmtN(sel.flank)} nt flank` : ''})
+        <b>aa ${range}</b> (${fmtN(aa.length)} aa) ↔ <b>nt ${ntRange}</b> (${fmtN(nt.length)} nt${sel.flank ? `; selection ${sel.from}–${sel.to} extended by ${flankText()} each end` : ''})
       </div>
       <div class="panel-actions">
         <button class="btn small" data-act="copy-nt">Copy nucleotides</button>
@@ -2538,7 +2545,7 @@ async function renderMap(body, id, safeId, isStale) {
     const ntFa = toFasta([{ header: ntHeader, seq: nt }]);
     const aaFa = toFasta([{ header: aaHeader, seq: aa }]);
     const act = (name, fn) => $(`[data-act="${name}"]`, body)?.addEventListener('click', fn);
-    const tag = `${safeId}_${sel.from}-${sel.to}`;
+    const tag = `${safeId}_${aFrom}-${aTo}`;
     act('copy-nt', () => copyText(nt));
     act('copy-aa', () => copyText(aa));
     act('save-nt', () => saveFile(`${tag}_nt.fasta`, ntFa));
@@ -2551,36 +2558,41 @@ async function renderMap(body, id, safeId, isStale) {
   // One domain (or any aa range) as nucleotide and protein FASTA records. The flank
   // setting applies, so a domain can be cut with a few bases of context.
   const rangeRecords = (from, to, name) => {
-    const lo = Math.max(0, ntOf(from) - sel.flank);
-    const hi = Math.min(dna.length, ntOf(to) + 3 + sel.flank);
-    const pos = coords(lo, hi);
+    const e = extend(from, to);
+    const note = sel.flank ? `, extended by ${flankText()}` : '';
     return {
-      nt: { header: `${cb.acc}:${pos} ${name} (${id} aa ${from}-${to}${sel.flank ? `, +${sel.flank} nt flank` : ''}${strandNote})`, seq: dna.slice(lo, hi) },
-      aa: { header: `${id}:${from}-${to} ${name}`, seq: protein.slice(from - 1, to) },
+      nt: { header: `${cb.acc}:${coords(e.lo, e.hi)} ${name} (${id} aa ${e.aFrom}-${e.aTo}${note}${strandNote})`, seq: e.nt },
+      aa: { header: `${id}:${e.aFrom}-${e.aTo} ${name}${note}`, seq: e.aa },
     };
   };
   const slug = (t) => t.replace(/[^\w.-]+/g, '_').slice(0, 40);
 
-  const drawDomains = () => {
-    $('#map-domains', body).innerHTML = placed.length ? `
-      <table class="kv"><tbody>${placed.map((d) => `<tr>
+  const otherRegions = others.map((r) => ({ ...r, hue: 215 }));
+  const allRows = [...placed, ...otherRegions];
+  const regionRow = (d) => `<tr>
         <td><span class="swatch" style="background:hsl(${d.hue} 60% 72%);border-color:hsl(${d.hue} 50% 40%)"></span>
-          <a href="#/record/cdd/${esc(d.cdd)}">${esc(d.name)}</a>${d.note && d.note !== d.name ? `<div class="muted small">${esc(d.note)}</div>` : ''}</td>
+          ${d.cdd ? `<a href="#/record/cdd/${esc(d.cdd)}">${esc(d.name)}</a>` : esc(d.name)}${d.cdd && d.note && d.note !== d.name ? `<div class="muted small">${esc(d.note)}</div>` : ''}</td>
         <td class="num">aa ${d.from}–${d.to}</td>
         <td class="num muted">${fmtN((d.to - d.from + 1) * 3)} nt</td>
         <td class="dom-actions">
           <button class="btn small" data-from="${d.from}" data-to="${d.to}">Select</button>
-          <button class="btn small" data-dl="nt" data-i="${placed.indexOf(d)}">nt FASTA</button>
-          <button class="btn small" data-dl="aa" data-i="${placed.indexOf(d)}">aa FASTA</button>
-        </td></tr>`).join('')}</tbody></table>
+          <button class="btn small" data-dl="nt" data-i="${allRows.indexOf(d)}">nt FASTA</button>
+          <button class="btn small" data-dl="aa" data-i="${allRows.indexOf(d)}">aa FASTA</button>
+        </td></tr>`;
+
+  const drawDomains = () => {
+    $('#map-domains', body).innerHTML = (placed.length ? `
+      <table class="kv"><tbody>${placed.map(regionRow).join('')}</tbody></table>
       <div class="panel-actions">
         <button class="btn small" data-all="nt">All domains: nucleotide FASTA</button>
         <button class="btn small" data-all="aa">All domains: protein FASTA</button>
         <button class="btn small" data-all="both">All domains: both</button>
-      </div>`
-      : '<p class="muted">NCBI lists no conserved domains for this protein.</p>';
+      </div>` : '<p class="muted">NCBI assigns no conserved domains to this protein.</p>')
+      + (otherRegions.length ? `
+      <details class="other-regions"${placed.length ? '' : ' open'}><summary>Other annotated regions (${otherRegions.length}) — functional regions from UniProt, such as hinge or activation function segments</summary>
+        <table class="kv"><tbody>${otherRegions.map(regionRow).join('')}</tbody></table></details>` : '');
     $$('#map-domains [data-dl]', body).forEach((b) => b.addEventListener('click', () => {
-      const d = placed[Number(b.dataset.i)];
+      const d = allRows[Number(b.dataset.i)];
       const r = rangeRecords(d.from, d.to, d.name)[b.dataset.dl];
       saveFile(`${safeId}_${slug(d.name)}_${d.from}-${d.to}_${b.dataset.dl}.fasta`, toFasta([r]));
     }));
@@ -2618,7 +2630,8 @@ async function renderMap(body, id, safeId, isStale) {
   form.addEventListener('input', () => {
     sel.from = clampAa(form.elements.from.value);
     sel.to = Math.max(sel.from, clampAa(form.elements.to.value));
-    sel.flank = Math.max(0, Math.min(5000, Number(form.elements.flank?.value) || 0));
+    sel.flank = Math.max(0, Math.min(2000, Number(form.elements.flank.value) || 0));
+    sel.unit = form.elements.unit.value;
     sel.stop = form.elements.stop.checked;
     drawMap();
     drawOut();
